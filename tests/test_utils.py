@@ -2,21 +2,13 @@ import torch
 import pytest
 
 import numpy as np
-import vegans.utils.utils as utils
+import vegans.utils as utils
 import vegans.utils.loading as loading
 
 def test_Dataset():
     X = list(range(100))
     data = utils.DataSet(X)
     assert len(data) == len(X)
-
-def test_load_mnist():
-    datapath = "./data/"
-    X_train, y_train, X_test, y_test = loading.load_data(datapath, which="MNIST", download=True)
-    assert X_train.shape == (60000, 32, 32)
-    assert np.max(X_train) == 1
-    assert X_test.shape == (10000, 32, 32)
-    assert np.max(X_test) == 1
 
 def test_WassersteinLoss():
     labels = torch.from_numpy(np.array([1, 1, 0, 0, 1, 0])).float()

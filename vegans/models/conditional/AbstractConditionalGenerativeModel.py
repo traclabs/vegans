@@ -3,11 +3,11 @@ import torch
 
 import numpy as np
 import matplotlib.pyplot as plt
-import vegans.utils.utils as utils
+import vegans.utils as utils
 
 from torch.nn import MSELoss
 from torchvision.utils import make_grid
-from vegans.utils.utils import get_input_dim
+from vegans.utils import get_input_dim
 from vegans.utils.networks import NeuralNetwork
 from vegans.models.unconditional.AbstractGenerativeModel import AbstractGenerativeModel
 
@@ -161,7 +161,7 @@ class AbstractConditionalGenerativeModel(AbstractGenerativeModel):
                 "The first layer will receive input shape: {} due to y_dim={}. ".format(required_dim, y_dim) +
                 "Given: {}.(Reshape & Flatten not considered)\n".format(str(layer)) +
                 "First layer should be of the form: {}.\n\n".format(first_layer) +
-                "Please use vegans.utils.utils.get_input_dim(in_dim, y_dim) to get the correct input dimensions.\n" +
+                "Please use vegans.utils.get_input_dim(in_dim, y_dim) to get the correct input dimensions.\n" +
                 "Check on github for notebooks of conditional GANs.\n\n"
             )
 
@@ -201,7 +201,7 @@ class AbstractConditionalGenerativeModel(AbstractGenerativeModel):
                 "\n\n**{}** is **not** a conditional network. The y_dim (label) will **not** be concatenated to the input of this network.\n\n".format(name) +
                 "The first layer will receive input shape: {} (same as x_dim). Given: {}.(Reshape & Flatten not considered)\n".format(in_dim, str(layer)) +
                 "First layer should be of the form: {}.\n\n".format(first_layer) +
-                "Please use vegans.utils.utils.get_input_dim(in_dim, y_dim) to get the correct input dimensions.\n" +
+                "Please use vegans.utils.get_input_dim(in_dim, y_dim) to get the correct input dimensions.\n" +
                 "Check on github for notebooks of conditional GANs.\n\n"
             )
 
@@ -316,23 +316,9 @@ class AbstractConditionalGenerativeModel(AbstractGenerativeModel):
     # Logging during training
     #########################################################################
     def _log_images(self, images, step, writer):
-        assert len(self.x_dim) > 1, (
-            "Called _log_images in AbstractGenerativeModel for adversary / encoder.input_size = {}.".format(self.x_dim)
-        )
-        if writer is not None:
-            grid = make_grid(images)
-            writer.add_image('images', grid, step)
-
-        fig, axs = self._build_images(images)
-        for i, ax in enumerate(np.ravel(axs)):
-            try:
-                lbl = torch.argmax(self.fixed_labels[i], axis=0).item()
-                ax.set_title("Label: {}".format(lbl))
-            except ValueError:
-                pass
-        plt.savefig(os.path.join(self.folder+"/images/image_{}.png".format(step)))
-        plt.close()
-        print("Images logged.")
+        if self.images_produced:
+            labels = [torch.argmax(lbl, axis=0).item() for lbl in self.fixed_labels]
+            super()._log_images(images=images, step=step, writer=writer, labels=labels)
 
     def _log_losses(self, X_batch, Z_batch, y_batch, mode):
         self._losses = self.calculate_losses(X_batch=X_batch, Z_batch=Z_batch, y_batch=y_batch)
