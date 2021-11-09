@@ -86,8 +86,8 @@ We can get these sizes with::
     y_dim = y_train.shape[1:]
     z_dim = 64
 
-    gen_in_dim = vegans.utils.utils.get_input_dim(z_dim, y_dim)
-    adv_in_dim = vegans.utils.utils.get_input_dim(x_dim, y_dim)
+    gen_in_dim = vegans.utils.get_input_dim(z_dim, y_dim)
+    adv_in_dim = vegans.utils.get_input_dim(x_dim, y_dim)
 
 The definition of a generator and adversary architecture is without a doubt the most important (and most difficult) part of
 GAN training. We will use the following architecture::
@@ -152,7 +152,7 @@ and your hardware.
 Model evaluation
 ----------------
 
-We can finally investiagte the results of the GAN with::
+We can finally investigate the results of the GAN with::
 
     samples, losses = gan_model.get_training_results(by_epoch=False)
 
@@ -188,7 +188,7 @@ This is the previous code in one single block::
 
     import numpy as np
     import vegans.utils.loading as loading
-    from vegans.utils.utils import plot_images
+    from vegans.utils import plot_images
     from vegans.GAN import ConditionalVanillaGAN
 
     loader = loading.MNISTLoader(root=None)

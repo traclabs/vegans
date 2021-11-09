@@ -52,5 +52,4 @@ fig, axs = plot_images(images=samples, labels=fixed_labels, show=True)
 
 test_labels = np.eye(N=10)
 test_samples = gan_model.generate(y=test_labels)
-test_labels = np.argmax(test_labels, axis=1)
-fig, axs = plot_images(images=test_samples, labels=test_labels, show=True)
+fig, axs = plot_images(images=test_samples, labels=np.argmax(test_labels, axis=1), show=True)

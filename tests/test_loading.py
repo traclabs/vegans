@@ -48,6 +48,8 @@ def test_Cifar10Loader():
         generator=generator, adversary=adversary, x_dim=(3, 32, 32), z_dim=64, y_dim=10, folder=None
     )
 
+"""
+# Excluded due to similarity with CIFAR10
 def test_Cifar100Loader():
     loader = loading.CIFAR100Loader()
     X_train, y_train, X_test, y_test = loader.load()
@@ -55,7 +57,10 @@ def test_Cifar100Loader():
     assert y_train.shape == (50000, 100)
     assert X_test.shape == (10000, 3, 32, 32)
     assert y_test.shape == (10000, 100)
+"""
 
+"""
+# Excluded due to size of dataset
 def test_CelebALoader():
     batch_size, max_loaded_images, crop_size = 32, 200, 150
     for output_shape in [16, 64, 128, 256]:
@@ -102,4 +107,6 @@ def test_CelebALoader():
         generator = loader.load_generator(x_dim=(16, 12, 12), z_dim=(16, 4, 4))
 
     with pytest.raises(AssertionError): # `z_dim[1]` must be equal to `z_dim[2]`
-            generator = loader.load_generator(z_dim=(16, 2, 4))
+        generator = loader.load_generator(z_dim=(16, 2, 4))
+"""
+
