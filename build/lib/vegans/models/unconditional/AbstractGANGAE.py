@@ -123,6 +123,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
         elif who == "Encoder":
             losses = self._calculate_encoder_loss(X_batch=X_batch, Z_batch=Z_batch)
         else:
+            self.calculate_common_loss_values_(X_batch=X_batch, Z_batch=Z_batch)
             losses = self._calculate_generator_loss(X_batch=X_batch, Z_batch=Z_batch)
             losses.update(self._calculate_adversary_loss(X_batch=X_batch, Z_batch=Z_batch))
             losses.update(self._calculate_encoder_loss(X_batch=X_batch, Z_batch=Z_batch))
@@ -219,3 +220,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
         generated_images = self.generator(latent_z_sample)
 
         return generated_images
+
+
+    def calculate_common_loss_values_(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
+        pass

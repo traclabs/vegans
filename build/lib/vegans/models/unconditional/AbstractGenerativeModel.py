@@ -968,5 +968,8 @@ class AbstractGenerativeModel(ABC):
     def __str__(self):
         self.summary()
 
+    def calculate_common_loss_values_(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
+        pass
+
     def generate_batch(self, X_batch):
         pass
