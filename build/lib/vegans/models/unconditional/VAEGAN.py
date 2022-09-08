@@ -126,74 +126,9 @@ class VAEGAN(AbstractGANGAE):
         loss_functions.update({"Reconstruction": nn.MSELoss()})
         return loss_functions
 
-
-    def calculate_common_loss_values_(self, X_batch, Z_batch):
-        bs_ = X_batch.size()[0]
-
-        # generate images using the network(s)
-        self.mu, self.logvar, self.fake_images_x, total_preds, discrim_feats = self.generate_(X_batch=X_batch, Z_batch=Z_batch)
-
-        # get the stuff for the reconstructed images
-        self.pred_fake_x = total_preds[:bs_]
-        self.feat_fake_x = discrim_feats[:bs_]
-
-        # get the stuff for the real images
-        self.pred_real_x = total_preds[bs_:-bs_]
-        self.feat_real_x = discrim_feats[bs_:-bs_]
-
-        # get the stuff for sampled images
-        self.pred_fake_z = total_preds[-bs_:]
-        self.feat_fake_z = discrim_feats[-bs_:]
-
-        # get_reconstruction_loss(self, X_batch, fake_images_x, fake_images_z):
-        self.recon_loss_x, self.recon_loss_z = self.get_reconstruction_loss(self.feat_real_x, self.feat_fake_x, self.feat_fake_z)
-
-        self.total_recon_loss = self.recon_loss_x + self.recon_loss_z
-
     #########################################################################
     # Actions during training
     #########################################################################
-    # Good!
-    # def _calculate_generator_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
-    #     # # # generate images using the network(s)
-    #     # if fake_images_x is None:
-    #     #     _, _, fake_images_x = self.generate_(X_batch=X_batch, Z_batch=Z_batch)
-
-    #     # if fake_images_z is None:
-    #     #     _, _, fake_images_z = self.generate_(Z_batch=Z_batch)
-
-    #     # # calculate the reconstruction loss2
-    #     # gen_loss_fake_x, gen_loss_fake_z = self.get_reconstruction_loss(X_batch, fake_images_x, fake_images_z)
-    #     # gen_loss_reconstruction = torch.sum(gen_loss_fake_x) + torch.sum(gen_loss_fake_z)
-
-    #     # # calculate the relavent parts of the GAN loss
-    #     # #    get generated images
-    #     # fake_predictions_z = self.predict(x=fake_images_z)
-    #     # fake_predictions_x = self.predict(x=fake_images_x)
-        
-    #     #    calculate the loss function
-    #     adv_loss_fake_x = self.loss_functions["Generator"](
-    #         self.pred_fake_x, torch.zeros_like(self.pred_fake_x, requires_grad=False)
-    #     )
-        
-    #     adv_loss_fake_z = self.loss_functions["Generator"](
-    #         self.pred_fake_z, torch.zeros_like(self.pred_fake_z, requires_grad=False)
-    #     )
-
-    #     #    add to get the total loss
-    #     loss_decoder = adv_loss_fake_x + adv_loss_fake_z
-
-    #     gen_loss = loss_decoder + self.lambda_x*self.total_recon_loss
-
-    #     print("Generator Loss:")
-    #     print(gen_loss)
-
-    #     return {
-    #         "Generator": gen_loss,
-    #         "Generator_x": self.recon_loss_x,
-    #         "Generator_z": self.recon_loss_z,
-    #         "Reconstruction": self.lambda_x*self.total_recon_loss
-    #     }
 
     # Good!
     #    Updating with maximization trick -> maximize log(D(G(z))) instead of min log(1 - D(G(Z)))
@@ -268,42 +203,6 @@ class VAEGAN(AbstractGANGAE):
             "Reconstruction": total_recon_loss
         }
 
-    # Good!
-    # def _calculate_encoder_loss(self, X_batch, Z_batch, fake_images_x=None):
-    #     # # encode the input and get fake images 
-    #     # if fake_images_x is None:
-    #     #     mu, log_variance, fake_images_x = self.generate_(X_batch=X_batch, Z_batch=Z_batch)
-
-    #     # # get the fake z images
-    #     # _, _, fake_images_z = self.generate_(Z_batch=Z_batch)
-
-    #     # # get the reconstruction loss
-    #     # gen_loss_fake_x, gen_loss_fake_z = self.get_reconstruction_loss(X_batch, fake_images_x, fake_images_z)
-    #     # enc_loss_reconstruction = torch.sum(gen_loss_fake_x) + torch.sum(gen_loss_fake_z) # sum here might be redundant
-
-    #     # fake_predictions_x = self.predict(x=fake_images_x)
-
-    #     # only used for reporting, not learning
-    #     enc_loss_fake_x = self.loss_functions["Encoder"](
-    #         self.pred_fake_x, self.label_smoothing_(torch.ones_like(self.pred_fake_x, requires_grad=False))
-    #     )
-
-    #     # calcualte the KL between the latent dist and the prior dist
-    #     kl_loss = torch.sum(0.5*(self.logvar.exp() + self.mu**2 - self.logvar - 1), 1) # good!
-        
-    #     # The authors do not apply the KL lambda weight to the encoder
-    #     enc_loss = (self.lambda_KL*torch.sum(kl_loss) + self.lambda_x*self.total_recon_loss)
-
-    #     print("Encoder Loss")
-    #     print(enc_loss)
-
-    #     return {
-    #         "Encoder": enc_loss,
-    #         "Encoder_x": enc_loss_fake_x,
-    #         "Kullback-Leibler": self.lambda_KL*kl_loss,
-    #         "Reconstruction": self.lambda_x*self.total_recon_loss
-    #     }
-
     def _calculate_encoder_loss(self, X_batch, Z_batch, fake_images_x=None):
         # based on Pytorch - DCGAN example
         self._zero_grad(who="Encoder")
@@ -372,44 +271,6 @@ class VAEGAN(AbstractGANGAE):
             "Reconstruction": total_recon_loss
         }
 
-    # Good!
-    # def _calculate_adversary_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
-        
-    #     # if fake_images_x is None:
-    #     #     _, _, fake_images_x = self.generate_(X_batch=X_batch, Z_batch=Z_batch)
-
-    #     # if fake_images_z is None:
-    #     #     fake_images_z = self.generate_(Z_batch=Z_batch)[-1].detach()
-
-    #     # fake_predictions_x = self.predict(x=fake_images_x)
-    #     # fake_predictions_z = self.predict(x=fake_images_z)
-    #     # real_predictions = self.predict(x=X_batch)
-
-    #     adv_loss_fake_x = self.loss_functions["Adversary"](
-    #         self.pred_fake_x, torch.zeros_like(self.pred_fake_x, requires_grad=False)
-    #     )
-        
-    #     adv_loss_fake_z = self.loss_functions["Adversary"](
-    #         self.pred_fake_z, torch.zeros_like(self.pred_fake_z, requires_grad=False)
-    #     )
-        
-    #     adv_loss_real = self.loss_functions["Adversary"](
-    #         self.pred_real_x, self.clean_discriminatoir_labels(torch.ones_like(self.pred_real_x, requires_grad=False))
-    #     )
-
-    #     adv_loss = (adv_loss_fake_z + adv_loss_fake_x + adv_loss_real)
-
-    #     print("Discriminator Loss:")
-    #     print(adv_loss)
-
-    #     return {
-    #         "Adversary": adv_loss,
-    #         "Adversary_fake_x": adv_loss_fake_x,
-    #         "Adversary_fake_z": adv_loss_fake_z,
-    #         "Adversary_real": adv_loss_real,
-    #         "RealFakeRatio": adv_loss_real / adv_loss_fake_x
-    #     }
-
     def _calculate_adversary_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
 
         # based on Pytorch - DCGAN example
@@ -469,13 +330,6 @@ class VAEGAN(AbstractGANGAE):
             "Adversary_real": adv_loss_real,
             "RealFakeRatio": adv_loss_real / adv_loss_fake_x
         }
-
-
-    def get_reconstruction_loss(self, X_batch, fake_images_x, fake_images_z):
-        # calculate the reconstruction loss at the pixel-level (fall-back option)
-        recon_loss_x = self.loss_functions["Reconstruction"](fake_images_x, X_batch)
-        recon_loss_z = self.loss_functions["Reconstruction"](fake_images_z, X_batch)
-        return recon_loss_x, recon_loss_z
 
     # Perform label-smoothing - suggested GAN hack - https://github.com/soumith/ganhacks (source for idea) https://arxiv.org/pdf/1701.00160.pdf (paper proposing idea)
     def label_smoothing_(self, y):

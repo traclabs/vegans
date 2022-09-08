@@ -89,6 +89,9 @@ class AbstractGenerativeModel(ABC):
 
         self.fixed_noise = self.sample(n=fixed_noise_size)
 
+        # assigned during training (fit) call
+        self.test_x_batch = None
+
 
         self._check_attributes()
         self.hyperparameters = {
@@ -422,12 +425,7 @@ class AbstractGenerativeModel(ABC):
             of the form "0.25e" (4 times per epoch), "1e" (once per epoch) or "3e" (every third epoch).
         enable_tensorboard : bool, optional
             Flag to indicate whether subdirectory folder/tensorboard should be created to log losses and images.
-        """
-        
-        # HACK
-        test_x_batch_ = iter(X_train).next()
-        
-        
+        """        
         if not self._init_run:
             raise ValueError("Run initializer of the AbstractGenerativeModel class is your subclass!")
         train_dataloader, test_dataloader, writer_train, writer_test, save_periods = self._set_up_training(
@@ -436,29 +434,40 @@ class AbstractGenerativeModel(ABC):
             save_losses_every=save_losses_every, enable_tensorboard=enable_tensorboard
         )
         max_batches = len(train_dataloader)
-        test_x_batch = iter(test_dataloader).next().to(self.device).float() if X_test is not None else None
+        
+        test_x_batch = iter(test_dataloader).next()[0].to(self.device).float() if X_test is not None else iter(X_train).next()[0].to(self.device).float()
+        
+        
         print_every, save_model_every, save_images_every, save_losses_every = save_periods
         
-        # HACK
-        # train_x_batch = iter(train_dataloader).next() # [0]
+        # HACK -- get only the training data, ignore labels
+        # train_x_batch = iter(train_dataloader).next() # [0]        
         train_x_batch = iter(train_dataloader).next()[0] # [0]
         
-        
+
         if len(train_x_batch) != batch_size:
             raise ValueError(
                 "Return value from train_dataloader has wrong shape. Should return object of size batch_size. " +
                 "Did you pass a dataloader to `X_train` containing labels as well? %d" % len(train_x_batch)
             )
 
-        # HACK
-        test_x_batch = test_x_batch_[0].to(self.device).float()
+        # HACK        
+        self.test_x_batch = test_x_batch
 
+        fig, axs = self._build_images(test_x_batch, labels=None)
+        if fig is not None:
+            path = os.path.join(self.folder, "images/image_{}.png".format(-1))
+            plt.savefig(path)
+            plt.close()
+            print("Images saved as {}.".format(path))
+
+        # log the images without doing anything to them... for comparsion
         # print(test_x_batch)
 
         self.train()
         if save_images_every is not None:
             # self._log_images(images=self.generate_batch(X_batch=torch.tensor(test_x_batch,requires_grad=False).to(device=self.device, dtype=torch.float)), step=0, writer=writer_train)
-            images_ = self.generate_batch(X_batch=test_x_batch)
+            images_ = self.generate_batch(X_batch=self.test_x_batch)
             print(images_[0][0])
             self._log_images(images=images_, step=0, writer=writer_train)
 
@@ -469,17 +478,12 @@ class AbstractGenerativeModel(ABC):
             for batch, X in enumerate(train_dataloader):
                 batch += 1
                 step = epoch*max_batches + batch
+                
+                # HACK
                 X = X[0].to(self.device).float()
                 # X = X.to(self.device).float()
                 Z = self.sample(n=len(X))
 
-                # print(X.size())
-                # print(X)
-
-                # train discriminator on separate Real and Fake images
-
-                # statistics based equlibrium training
-                # self.calculate_common_loss_values_(X_batch=X, Z_batch=Z)
                 for name, _ in self.neural_nets.items():
                     for _ in range(self.steps[name]): # unlikely to use this
                         self._zero_grad(who=name)
@@ -489,61 +493,6 @@ class AbstractGenerativeModel(ABC):
                         self._backward(who=name)
                         self._step(who=name)
 
-                # Train Discriminator
-
-                # self._losses()
-
-                # self._losses = self.calculate_losses(X_batch=X, Z_batch=Z)
-
-                # self._zero_grad()
-
-                # # train the encoder:
-                # self._backward(who="Encoder")
-                # self._step(who="Encoder")
-
-                # # Train the generator
-                # self._zero_grad()
-                # self._backward(who="Generator")
-                # self._step(who="Generator")
-
-                # # train the discriminator
-                # self._zero_grad(who="Adversary")
-                # self._backward(who="Adversary", retain=False)
-                # self._step(who="Adversary")
-
-
-
-                # Now figure out how to update the discriminator and the decoder
-                # train_dis = True
-                # train_dec = True
-
-                # real_data_dis_loss = self._losses["Adversary_real"].detach()
-                # sampled_data_dis_loss = self._losses["Adversary_fake_z"].detach()
-
-                # if real_data_dis_loss < equilibrium - margin or sampled_data_dis_loss < equilibrium - margin:
-                #     train_dis = False
-                
-                # if real_data_dis_loss > equilibrium + margin or sampled_data_dis_loss > equilibrium + margin:
-                #     train_dec = False
-
-                # if not (train_dec or train_dis):
-                #     train_dec = True
-                #     train_dis = True
-
-
-                # if train_dec:
-                #     # print("Training - G")
-                #     who = "Generator"
-                #     self._zero_grad(who=who)
-                #     self._backward(who=who)
-                #     self._step(who=who)
-                    
-                # if train_dis:
-                #     # print("Training - A")
-                #     who = "Adversary"
-                #     self._zero_grad(who=who)
-                #     self._backward(who=who)
-                #     self._step(who=who)
 
                 if print_every is not None and step % print_every == 0:
                     self._losses = self.calculate_losses(X_batch=X, Z_batch=Z)
@@ -557,7 +506,7 @@ class AbstractGenerativeModel(ABC):
 
                 if save_images_every is not None and step % save_images_every == 0:
                     # self._log_images(images=self.generate_batch(X_batch=torch.tensor(test_data).to(device=self.device,  dtype=torch.float)), step=step, writer=writer_train)
-                    images_ = self.generate_batch(X_batch=test_x_batch)
+                    images_ = self.generate_batch(X_batch=self.test_x_batch)
                     print(images_[0][0])
 
                     self._log_images(images=images_, step=step, writer=writer_train)
@@ -567,8 +516,8 @@ class AbstractGenerativeModel(ABC):
                     self._log_losses(X_batch=X, Z_batch=Z, mode="Train")
                     if enable_tensorboard:
                         self._log_scalars(step=step, writer=writer_train)
-                    if test_x_batch is not None:
-                        self._log_losses(X_batch=test_x_batch, Z_batch=self.sample(n=len(test_x_batch)), mode="Test")
+                    if self.test_x_batch is not None:
+                        self._log_losses(X_batch=self.test_x_batch, Z_batch=self.sample(n=len(self.test_x_batch)), mode="Test")
                         if enable_tensorboard:
                             self._log_scalars(step=step, writer=writer_test)
             
@@ -760,9 +709,10 @@ class AbstractGenerativeModel(ABC):
         losses_dict : dict
             Dictionary containing all loss types logged during training
         """
-        samples = self.generate(z=self.fixed_noise)
+        # samples = self.generate(z=self.fixed_noise)
+        recon_samples = self.generate_batch(X_batch=self.test_x_batch)
         losses = self.get_losses(by_epoch=by_epoch, agg=agg)
-        return samples, losses
+        return self.test_x_batch, recon_samples, losses
 
     def get_losses(self, by_epoch=False, agg=None):
         """ Get losses logged during training
