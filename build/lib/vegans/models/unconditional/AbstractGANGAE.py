@@ -69,6 +69,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
             folder=None,
             ngpu=0,
             secure=True,
+            lr_decay=0.9,
             _called_from_conditional=False):
 
         self.adv_type = adv_type
@@ -81,7 +82,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
 
         super().__init__(
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay
         )
         self.hyperparameters["adv_type"] = adv_type
         if not _called_from_conditional and self.secure:
@@ -219,3 +220,8 @@ class AbstractGANGAE(AbstractGenerativeModel):
         generated_images = self.generator(latent_z_sample)
 
         return generated_images
+
+
+    
+    def _save_models(self, epoch, name=None):
+        pass

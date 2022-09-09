@@ -26,6 +26,7 @@ import torch
 
 import numpy as np
 import torch.nn as nn
+import os
 
 from torch.nn import L1Loss
 from vegans.utils.layers import LayerReshape
@@ -95,13 +96,14 @@ class VAEGAN(AbstractGANGAE):
             device=None,
             ngpu=0,
             folder="./veganModels/VAEGAN",
-            secure=True):
+            secure=True,
+            lr_decay=0.9):
 
 
         super().__init__(
             generator=generator, adversary=adversary, encoder=encoder,
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, adv_type=adv_type, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay
         )
 
         self.lambda_KL = lambda_KL
@@ -200,7 +202,7 @@ class VAEGAN(AbstractGANGAE):
             "Generator": gen_loss,
             "Generator_x": gen_loss_fake_x,
             "Generator_z": gen_loss_fake_z,
-            "Reconstruction": total_recon_loss
+            "Reconstruction_Gen": total_recon_loss
         }
 
     def _calculate_encoder_loss(self, X_batch, Z_batch, fake_images_x=None):
@@ -268,7 +270,7 @@ class VAEGAN(AbstractGANGAE):
             "Encoder": enc_loss,
             "Encoder_x": enc_loss_fake_x,
             "Kullback-Leibler": kl_loss,
-            "Reconstruction": total_recon_loss
+            "Reconstruction_Enc": total_recon_loss
         }
 
     def _calculate_adversary_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
@@ -354,6 +356,48 @@ class VAEGAN(AbstractGANGAE):
     def clean_discriminatoir_labels(self, y):
         y_ = self.label_smoothing_(y)
         return self.nosiy_labels_(y_, p_flip=0.05)    # 5% chance of a flip
+
+
+    def _save_models(self, epoch, name=None):
+        """ Saves model in the model folder as torch / pickle object.
+
+        Parameters
+        ----------
+        name : str, optional
+            name of the saved file. folder specified in the constructor used
+            in absolute path.
+        """
+        if name is None:
+            name = "model.torch"
+        if self.folder is not None:
+            torch.save({'encoder' : self.neural_nets["Encoder"].network.state_dict(),
+                        'decoder' : self.neural_nets["Generator"].network.state_dict(),
+                        "discriminator" : self.neural_nets["Adversary"].network.state_dict(),
+                        "encoder_opt_state" : self.optimizers["Encoder"].state_dict(),
+                        "decoder_opt_state" : self.optimizers["Generator"].state_dict(),
+                        "discriminator_opt_state" : self.optimizers["Adversary"].state_dict(),
+                        "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
+                        "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
+                        "discriminator_lr_state" : self.lr_schedulers["Adversary"].state_dict(),
+                        "epoch" : epoch,
+                        "losses" : self._losses
+                        },
+                        os.path.join(self.folder, name))
+
+        else:
+            torch.save({'encoder' : self.neural_nets["Encoder"].network.state_dict(),
+                        'decoder' : self.neural_nets["Generator"].network.state_dict(),
+                        "discriminator" : self.neural_nets["Adversary"].network.state_dict(),
+                        "encoder_opt_state" : self.optimizers["Encoder"].state_dict(),
+                        "decoder_opt_state" : self.optimizers["Generator"].state_dict(),
+                        "discriminator_opt_state" : self.optimizers["Adversary"].state_dict(),
+                        "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
+                        "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
+                        "discriminator_lr_state" : self.lr_schedulers["Adversary"].state_dict(),
+                        "epoch" : epoch,
+                        "losses" : self._losses
+                        },
+                        os.path.join("", name))
 
    
     # TODO: Need to add generate from a sample input
