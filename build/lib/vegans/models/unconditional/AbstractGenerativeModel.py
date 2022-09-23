@@ -1,3 +1,4 @@
+from operator import le
 import os
 import sys
 import time
@@ -489,9 +490,12 @@ class AbstractGenerativeModel(ABC):
             self._log_images(images=images_, step=0, writer=writer_train)
 
         for epoch in range(epochs):
+            epoch_losses_ = None
+
             print("---"*20)
             print("EPOCH:", epoch+1)
             print("---"*20)
+            sys.stdout.flush()
             for batch, X in enumerate(train_dataloader):
                 batch += 1
                 step = epoch*max_batches + batch
@@ -507,28 +511,42 @@ class AbstractGenerativeModel(ABC):
 
                         self._losses = self.calculate_losses(X_batch=X, Z_batch=Z, who=name)
 
+                        if epoch_losses_ is None:
+                            epoch_losses_ = self._losses
+                        else:
+                            epoch_losses_.update(self._losses)
+
                         self._backward(who=name)
                         self._step(who=name)
 
-                        # added learning-rate decay
-                        self._step_lr(who=name)
+                        # # added learning-rate decay
+                        # self._step_lr(who=name)
 
+                # we are outside of the main learning-loop, now report stuff
+                #    start by coping over the track losses to the right place for other functions...
+                #    HACK.... not ideal
+                self._losses = epoch_losses_
+                
+                # We are done learning with this batch, remove need to track gradient
+                X = X.detach()
+                Z = Z.detach()
+
+                # clean just to be safe
+                torch.cuda.empty_cache()
 
                 if print_every is not None and step % print_every == 0:
-                    self._losses = self.calculate_losses(X_batch=X, Z_batch=Z)
+                    # self._losses = self.calculate_losses(X_batch=X, Z_batch=Z)
                     self._summarise_batch(
                         batch=batch, max_batches=max_batches, epoch=epoch,
                         max_epochs=epochs, print_every=print_every
                     )
-
-                torch.cuda.empty_cache()
+                    sys.stdout.flush()
 
                 if save_model_every is not None and step % save_model_every == 0:
                     #  calculate losses
-                    self._losses = self.calculate_losses(X_batch=X, Z_batch=Z)
+                    # self._losses = self.calculate_losses(X_batch=X, Z_batch=Z)
                     self._save_models(epoch=epoch, name="models/model_{}.torch".format(step))
 
-                torch.cuda.empty_cache()
 
                 if save_images_every is not None and step % save_images_every == 0:
                     # self._log_images(images=self.generate_batch(X_batch=torch.tensor(test_data).to(device=self.device,  dtype=torch.float)), step=step, writer=writer_train)
@@ -538,30 +556,32 @@ class AbstractGenerativeModel(ABC):
                     self._log_images(images=images_, step=step, writer=writer_train)
                     images_.detach().cpu()
                     self._save_losses_plot()
-
-                torch.cuda.empty_cache()
+                    torch.cuda.empty_cache()
 
                 if save_losses_every is not None and step % save_losses_every == 0:
                     self._log_losses(X_batch=X, Z_batch=Z, mode="Train")
-                    X.detach().cpu()
+                    X.cpu()
+                    Z.cpu()
                     if enable_tensorboard:
                         self._log_scalars(step=step, writer=writer_train)
                     
                     torch.cuda.empty_cache()
                     
                     if self.test_x_batch is not None:
-                        self.test_x_batch.to(self.device)
                         self._log_losses(X_batch=self.test_x_batch, Z_batch=self.sample(n=len(self.test_x_batch)), mode="Test")
-                        self.test_x_batch.detach().cpu()
                         if enable_tensorboard:
                             self._log_scalars(step=step, writer=writer_test)
+                        
+                        for key in self._losses.keys():
+                            self._losses[key].detach().cpu()
+                        torch.cuda.empty_cache()      
 
-                X.detach().cpu()
-                Z.detach().cpu()
+                # keep these here just to be safe
+                X.cpu()
+                Z.cpu()
                 torch.cuda.empty_cache()
 
             
-            print(batch)
         self.eval()
         self._clean_up(writers=[writer_train, writer_test])
 
@@ -689,7 +709,8 @@ class AbstractGenerativeModel(ABC):
         return None, None
 
     def _log_losses(self, X_batch, Z_batch, mode):
-        self._losses = self.calculate_losses(X_batch=X_batch, Z_batch=Z_batch)
+        if mode != "Train":
+            self._losses = self.calculate_losses(X_batch=X_batch, Z_batch=Z_batch)
         self._append_losses(mode=mode)
 
     def _append_losses(self, mode):
@@ -909,10 +930,13 @@ class AbstractGenerativeModel(ABC):
             )
             sys_stdout_temp = sys.stdout
             sys.stdout = open(os.path.join(self.folder, 'summary.txt'), 'w')
+        
         for name, neural_net in self.neural_nets.items():
             neural_net.summary()
             print("\n\n")
+        
         print("Hyperparameters\n---------------")
+        
         for key, value in self.get_hyperparameters().items():
             print("{}: ---> {}".format(str(key), str(value)))
         if save:
@@ -936,6 +960,7 @@ class AbstractGenerativeModel(ABC):
     def eval_batch(self, x_test_dataloader, type, results_path=None):
         self.eval()
 
+        
         results_folder = None
 
         if results_path is not None:
@@ -950,8 +975,9 @@ class AbstractGenerativeModel(ABC):
         if not os.path.isdir(results_folder):
             os.makedirs(results_folder)
 
-        # get all the images associated with this dataset
-        self.generate_dataset_images(x_test_dataloader, results_folder)
+        with torch.no_grad():
+            # get all the images associated with this dataset
+            self.generate_dataset_images(x_test_dataloader, results_folder)
         
         torch.cuda.empty_cache()
 
@@ -960,6 +986,7 @@ class AbstractGenerativeModel(ABC):
         return losses_dict
 
     def generate_dataset_images(self, X_data, folder_path):    
+        
         for batch, X in enumerate(X_data):
             X = X.to(self.device).float()
             Z = self.sample(n=len(X))
@@ -972,17 +999,45 @@ class AbstractGenerativeModel(ABC):
             recon_images.detach().cpu()
             torch.cuda.empty_cache()
 
+            # if the batch_size is greater than 18, generate multiple 6x6 -> n x n grids of images
+            x_batches = [[]]
+            recon_batches = [[]]
+            ctr = 0
+
+            for i, (x_, recon_) in enumerate(zip(X, recon_images)):
+                if i == 0 or i % 18 != 0:
+                    x_batches[ctr].append(x_)
+                    recon_batches[ctr].append(recon_)
+                elif i % 18 == 0:
+                    ctr += 1
+                    x_batches.append([])
+                    recon_batches.append([])
+
+
+            all_images_batches = []
+            
             # create one set of all the images (at most a 6x6 grid)
-            all_images = torch.cat((X, recon_images), 0)
+            for x_batch, recon_batch in zip(x_batches, recon_batches):
+                # print(len(recon_batch))
+                batch_ = torch.cat((torch.stack(x_batch), torch.stack(recon_batch)), 0)
+                all_images_batches.append(batch_)
 
-            # save the recon and original images
-            fig, axs = self._build_images(all_images, labels=None)
-            if fig is not None:
-                path = os.path.join(folder_path, "images_batch_{}.png".format(batch))
-                plt.savefig(path)
-                plt.close()
-                print("Images saved as {}.".format(path))
+            x_batches = None
+            recon_batches = None
+            
+            # iterate over batches and save images
+            for i, batch_ in enumerate(all_images_batches):
+                # save the recon and original images
+                fig, axs = self._build_images(batch_, labels=None)
+                if fig is not None:
+                    path = os.path.join(folder_path, "images_batch_{}_{}.png".format(batch, i))
+                    plt.savefig(path)
+                    plt.close()
+                    # print("Images saved as {}.".format(path))
 
+            for batch_ in all_images_batches:
+                batch_.detach().cpu()
+            all_images_batches = None
 
             # just to be safe
             X.detach().cpu()
