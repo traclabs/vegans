@@ -111,6 +111,12 @@ class VAEGAN(AbstractGANGAE):
         self.hyperparameters["lambda_KL"] = lambda_KL
         self.hyperparameters["lambda_x"] = lambda_x
 
+        # HACK - done by hand... do so automatically later
+        self.lambda_KL_max = 0.8           # maximum value we will allow the kl weight to reach  
+        self.steps_per_epoch = 2696        # number of steps per epoch (size of dataset / batch_size)
+        self.warmup_steps = 10             # number of epochs we want the kl to "warm up" or increase
+
+
         if self.secure:
             # TODO
             # if self.encoder.output_size == self.z_dim:
@@ -197,6 +203,11 @@ class VAEGAN(AbstractGANGAE):
 
         # print("Generator Loss:")
         # print(gen_loss)
+        
+        # update the lambda kl value
+        self.lambda_KL = min(self.lambda_KL_max, self.lambda_KL + 1.0 / (self.warmup_steps * self.steps_per_epoch))
+
+        # print(self.lambda_KL)
 
         return {
             "Generator": gen_loss,
@@ -247,13 +258,13 @@ class VAEGAN(AbstractGANGAE):
 
         # calculate reconstruction loss values
         # calculate the reconstruction loss for the fake_x features
-        recon_loss_x = (self.lambda_x/2.0)*self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
+        recon_loss_x = self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
 
         # accumulate gradient
         recon_loss_x.backward(retain_graph=True)
 
         # calcualte the reconstruction loss for the fake_z features
-        recon_loss_z = (self.lambda_x/2.0)*self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
+        recon_loss_z = self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
 
         # accumulate gradient
         recon_loss_z.backward(retain_graph=True)
