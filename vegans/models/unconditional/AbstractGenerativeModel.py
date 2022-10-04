@@ -1,6 +1,7 @@
 from operator import le
 import os
 import sys
+from tabnanny import verbose
 import time
 import json
 import torch
@@ -54,7 +55,7 @@ class AbstractGenerativeModel(ABC):
     #########################################################################
     # Actions before training
     #########################################################################
-    def __init__(self, x_dim, z_dim, optim, optim_kwargs, feature_layer, fixed_noise_size, device, ngpu, folder, secure, lr_decay):
+    def __init__(self, x_dim, z_dim, optim, optim_kwargs, feature_layer, fixed_noise_size, device, ngpu, folder, secure, lr_decay, T0, T_mult, eta_min):
         self.x_dim = tuple([x_dim]) if isinstance(x_dim, int) else tuple(x_dim)
         self.z_dim = tuple([z_dim]) if isinstance(z_dim, int) else tuple(z_dim)
         self.ngpu = ngpu if ngpu is not None else 0
@@ -62,6 +63,10 @@ class AbstractGenerativeModel(ABC):
         self.fixed_noise_size = fixed_noise_size
         self.device = device
         self.lr_decay = lr_decay
+        self.T_mult = T_mult
+        self.T0 = T0
+        self.eta_min = eta_min
+
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         elif device not in ["cuda", "cpu"]:
@@ -88,6 +93,9 @@ class AbstractGenerativeModel(ABC):
         self.loss_functions = self._define_loss()
         self.optimizers = self._define_optimizers(optim=optim, optim_kwargs=optim_kwargs)
         self.to(self.device)
+
+        # used to track warm-up stuff for KL divergence measure
+        self.epoch_ctr_ = 0
 
         self.fixed_noise = self.sample(n=fixed_noise_size)
 
@@ -124,8 +132,10 @@ class AbstractGenerativeModel(ABC):
     def _register_lr_schedulers(self):
         _temp_scheduler_dict = {}
 
-        for k, v in self.optimizers.items():
-            _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=self.lr_decay)
+        # for k, v in self.optimizers.items():
+        #     _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=self.lr_decay)
+
+        _temp_scheduler_dict["Adversary"] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizers["Adversary"], self.T0, self.T_mult, self.eta_min, verbose=True)        
 
         return _temp_scheduler_dict
 
@@ -490,6 +500,7 @@ class AbstractGenerativeModel(ABC):
             self._log_images(images=images_, step=0, writer=writer_train)
 
         for epoch in range(epochs):
+            self.epoch_ctr_ = epoch
             epoch_losses_ = None
 
             print("---"*20)
@@ -518,9 +529,6 @@ class AbstractGenerativeModel(ABC):
 
                         self._backward(who=name)
                         self._step(who=name)
-
-                        # # added learning-rate decay
-                        # self._step_lr(who=name)
 
                 # we are outside of the main learning-loop, now report stuff
                 #    start by coping over the track losses to the right place for other functions...
@@ -581,7 +589,12 @@ class AbstractGenerativeModel(ABC):
                 Z.cpu()
                 torch.cuda.empty_cache()
 
-            
+            # end of batch for-loop
+            # added learning-rate decay
+            self._step_lr()
+            sys.stdout.flush()    
+        # end of epoch for-loop
+
         self.eval()
         self._clean_up(writers=[writer_train, writer_test])
 
@@ -634,6 +647,8 @@ class AbstractGenerativeModel(ABC):
             self.lr_schedulers[who].step()
         else:
             [lr_scheduler.step() for _, lr_scheduler in self.lr_schedulers.items()]
+            print("Decaying Learning Rates!")
+            sys.stdout.flush()
 
 
     #########################################################################
@@ -674,6 +689,8 @@ class AbstractGenerativeModel(ABC):
             np.round(remaining_batches*time_per_batch/60, 3), remaining_batches
             )
         )
+        print("\n")
+        print("Average Time Per Epoch ~{} minutes".format(time_per_batch * max_batches))
         self.current_timer = time.perf_counter()
 
     def _log_images(self, images, step, writer, labels=None):
@@ -1107,4 +1124,8 @@ class AbstractGenerativeModel(ABC):
         pass
 
     def _save_models(self, epoch, name=None):
+        pass
+
+
+    def _load_models(self, epoch, name=None):
         pass

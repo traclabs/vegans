@@ -83,7 +83,7 @@ def plot_images(images, labels=None, show=True, n=None):
         images = invert_channel_order(images=images)
     elif len(images.shape)==4 and images.shape[1] == 1:
         images = images.reshape((-1, images.shape[2], images.shape[3]))
-    
+
     if n is None:
         n = images.shape[0]
     if n > 36:

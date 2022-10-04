@@ -165,13 +165,13 @@ class Adversary(NeuralNetwork):
             else:
                 if adv_type not in valid_types:
                     raise TypeError("`adv_type` must be one of {}. Given: {}.".format(valid_types, adv_type))
-            self._type = adv_type
+            # self._type = adv_type
 
-            if valid_last_layer is not None:
-                assert last_layer_type in valid_last_layer, (
-                    "Last layer activation function of {} needs to be one of '{}'. Given: {}."
-                    .format(adv_type, valid_last_layer, last_layer_type)
-                )
+            # if valid_last_layer is not None:
+            #     assert last_layer_type in valid_last_layer, (
+            #         "Last layer activation function of {} needs to be one of '{}'. Given: {}."
+            #         .format(adv_type, valid_last_layer, last_layer_type)
+            #     )
 
         super().__init__(network, input_size=input_size, name="Adversary", device=device, ngpu=ngpu, secure=secure)
 

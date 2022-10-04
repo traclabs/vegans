@@ -97,24 +97,32 @@ class VAEGAN(AbstractGANGAE):
             ngpu=0,
             folder="./veganModels/VAEGAN",
             secure=True,
-            lr_decay=0.9):
+            lr_decay=0.9,
+            T0=5,
+            T_mult=1,
+            eta_min=1e-6,
+            warm_steps=5,
+            cycle=5):
 
 
         super().__init__(
             generator=generator, adversary=adversary, encoder=encoder,
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, adv_type=adv_type, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay, T0=T0,
+            T_mult=T_mult, eta_min=eta_min
         )
 
         self.lambda_KL = lambda_KL
         self.lambda_x = lambda_x
         self.hyperparameters["lambda_KL"] = lambda_KL
         self.hyperparameters["lambda_x"] = lambda_x
+        self.cycle = cycle
+        self.last_reset_epoch = 0
 
         # HACK - done by hand... do so automatically later
-        self.lambda_KL_max = 0.8           # maximum value we will allow the kl weight to reach  
-        self.steps_per_epoch = 2696        # number of steps per epoch (size of dataset / batch_size)
-        self.warmup_steps = 10             # number of epochs we want the kl to "warm up" or increase
+        self.lambda_KL_max = 0.9                    # maximum value we will allow the kl weight to reach  
+        self.steps_per_epoch = 2696                 # number of steps per epoch (size of dataset / batch_size)
+        self.warmup_steps = warm_steps              # number of epochs we want the kl to "warm up" or increase
 
 
         if self.secure:
@@ -123,7 +131,7 @@ class VAEGAN(AbstractGANGAE):
             #     raise ValueError(
             #         "Encoder output size is equal to z_dim, but for VAE algorithms the encoder last layers for mu and sigma " +
             #         "are constructed by the algorithm itself.\nSpecify up to the second last layer for this particular encoder."
-            #     )
+            #     ) T0, T_mult
             assert (self.generator.output_size == self.x_dim), (
                 "Generator output shape must be equal to x_dim. {} vs. {}.".format(self.generator.output_size, self.x_dim)
             )
@@ -184,12 +192,12 @@ class VAEGAN(AbstractGANGAE):
         real_x_features = self.adversary.network._get_feature_layer_activations()
 
         # calculate the reconstruction loss for the fake_x features
-        recon_loss_x = (self.lambda_x/2.0)*self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
+        recon_loss_x = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
 
         # accumulate gradient
         recon_loss_x.backward(retain_graph=True)
         # calcualte the reconstruction loss for the fake_z features
-        recon_loss_z = (self.lambda_x/2.0)*self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
+        recon_loss_z = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
 
         # accumulate gradient
         recon_loss_z.backward(retain_graph=True)
@@ -203,11 +211,6 @@ class VAEGAN(AbstractGANGAE):
 
         # print("Generator Loss:")
         # print(gen_loss)
-        
-        # update the lambda kl value
-        self.lambda_KL = min(self.lambda_KL_max, self.lambda_KL + 1.0 / (self.warmup_steps * self.steps_per_epoch))
-
-        # print(self.lambda_KL)
 
         return {
             "Generator": gen_loss,
@@ -217,6 +220,15 @@ class VAEGAN(AbstractGANGAE):
         }
 
     def _calculate_encoder_loss(self, X_batch, Z_batch, fake_images_x=None):
+        
+        # check KL weight cycle stuff
+        if self.epoch_ctr_ % self.cycle == 0 and self.epoch_ctr_ != 0 and self.last_reset_epoch != self.epoch_ctr_:
+            # reset KL divergence to small value 
+            self.lambda_KL = 0.01
+            self.last_reset_epoch = self.epoch_ctr_
+            print("----- Resetting KL weight!!!! %.4f -----" % self.lambda_KL)
+
+
         # based on Pytorch - DCGAN example
         self._zero_grad(who="Encoder")
 
@@ -236,7 +248,7 @@ class VAEGAN(AbstractGANGAE):
         # calcualte the KL between the latent dist and the prior dist
         kl_loss = torch.sum(0.5*(logvar.exp() + mu**2 - logvar - 1), 1)
 
-        kl_loss = self.lambda_KL*torch.sum(kl_loss) 
+        kl_loss = self.lambda_KL*torch.mean(kl_loss, 0) 
 
         # calculate the preds for the reconstructed input
         pred_fake_x = self.adversary(recon_images)
@@ -276,6 +288,11 @@ class VAEGAN(AbstractGANGAE):
 
         # print("Encoder Loss")
         # print(enc_loss)
+
+        # update the lambda kl value
+        self.lambda_KL = min(self.lambda_KL_max, self.lambda_KL + 1.0 / (self.warmup_steps * self.steps_per_epoch))
+
+        # print(self.lambda_KL)
 
         return {
             "Encoder": enc_loss,
@@ -387,8 +404,8 @@ class VAEGAN(AbstractGANGAE):
                         "encoder_opt_state" : self.optimizers["Encoder"].state_dict(),
                         "decoder_opt_state" : self.optimizers["Generator"].state_dict(),
                         "discriminator_opt_state" : self.optimizers["Adversary"].state_dict(),
-                        "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
-                        "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
+                        # "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
+                        # "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
                         "discriminator_lr_state" : self.lr_schedulers["Adversary"].state_dict(),
                         "epoch" : epoch,
                         "losses" : self._losses
@@ -402,8 +419,8 @@ class VAEGAN(AbstractGANGAE):
                         "encoder_opt_state" : self.optimizers["Encoder"].state_dict(),
                         "decoder_opt_state" : self.optimizers["Generator"].state_dict(),
                         "discriminator_opt_state" : self.optimizers["Adversary"].state_dict(),
-                        "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
-                        "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
+                        # "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
+                        # "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
                         "discriminator_lr_state" : self.lr_schedulers["Adversary"].state_dict(),
                         "epoch" : epoch,
                         "losses" : self._losses
@@ -411,4 +428,43 @@ class VAEGAN(AbstractGANGAE):
                         os.path.join("", name))
 
    
-    # TODO: Need to add generate from a sample input
+    def _load_models(self, name=None, training=False):
+        # assign a default model file name
+        if name is None:
+            name = "model.torch"
+
+        # construct the path to the saved model
+        path = ""
+        if self.folder is not None:
+            path = os.path.join(self.folder, name)
+        else:
+            path = os.path.join(self.folder, name)
+        
+        # load the saved checkpoint
+        check_point = torch.load(path)
+
+        # load the epoch we saved this model from
+        epoch_ = check_point["epoch"]
+
+        # load the actual models
+        self.neural_nets["Encoder"].network.load_state_dict(check_point["encoder"])
+        self.neural_nets["Generator"].network.load_state_dict(check_point["decoder"])
+        self.neural_nets["Adversary"].network.load_state_dict(check_point["discriminator"])
+        
+        # if we are loading the model to continue training
+        if training:
+            # load the optimizers
+            self.optimizers["Encoder"].load_state_dict(check_point["encoder_opt_state"])
+            self.optimizers["Generator"].load_state_dict(check_point["decoder_opt_state"])
+            self.optimizers["Adversary"].load_state_dict(check_point["discriminator_opt_state"])
+
+            # load the learning rate schedulers
+            self.lr_schedulers["Encoder"].load_state_dict(check_point["encoder_lr_state"])
+            self.lr_schedulers["Generator"].load_state_dict(check_point["decoder_lr_state"])
+            self.lr_schedulers["Adversary"].load_state_dict(check_point["discriminator_lr_state"])
+
+            # load the loss dict
+            self._losses = check_point["losses"]
+
+        # return the epoch this model was saved at
+        return epoch_

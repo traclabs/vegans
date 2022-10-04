@@ -1,6 +1,6 @@
 import torch
 
-from torch.nn import BCELoss
+from torch.nn import BCELoss, BCEWithLogitsLoss
 from vegans.utils import WassersteinLoss
 from vegans.utils.networks import Generator, Adversary, Encoder
 from vegans.models.unconditional.AbstractGenerativeModel import AbstractGenerativeModel
@@ -70,6 +70,9 @@ class AbstractGANGAE(AbstractGenerativeModel):
             ngpu=0,
             secure=True,
             lr_decay=0.9,
+            T0=5,
+            T_mult=1,
+            eta_min=1e-6,
             _called_from_conditional=False):
 
         self.adv_type = adv_type
@@ -77,12 +80,13 @@ class AbstractGANGAE(AbstractGenerativeModel):
         self.adversary = Adversary(adversary, input_size=x_dim, adv_type=adv_type, device=device, ngpu=ngpu, secure=secure)
         self.encoder = Encoder(encoder, input_size=x_dim, device=device, ngpu=ngpu, secure=secure)
         self.neural_nets = {
-            "Generator": self.generator, "Adversary": self.adversary, "Encoder": self.encoder
+            "Encoder": self.encoder, "Generator": self.generator, "Adversary": self.adversary
         }
 
         super().__init__(
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay,
+            T0=T0, T_mult=T_mult, eta_min=eta_min
         )
         self.hyperparameters["adv_type"] = adv_type
         if not _called_from_conditional and self.secure:
@@ -92,7 +96,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
 
     def _define_loss(self):
         if self.adv_type == "Discriminator":
-            loss_functions = {"Generator": BCELoss(), "Adversary": BCELoss(), "Encoder": BCELoss()}
+            loss_functions = {"Generator": BCEWithLogitsLoss(), "Adversary": BCEWithLogitsLoss(), "Encoder": BCEWithLogitsLoss()}
         elif self.adv_type == "Critic":
             loss_functions = {"Generator": WassersteinLoss(), "Adversary": WassersteinLoss()}
         else:
@@ -224,4 +228,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
 
     
     def _save_models(self, epoch, name=None):
+        pass
+
+    def _load_models(self, epoch, name=None):
         pass
