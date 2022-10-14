@@ -132,10 +132,11 @@ class AbstractGenerativeModel(ABC):
     def _register_lr_schedulers(self):
         _temp_scheduler_dict = {}
 
-        # for k, v in self.optimizers.items():
-        #     _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=self.lr_decay)
+        for k, v in self.optimizers.items():
+            # _temp_scheduler_dict[k] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(v, self.T0, self.T_mult, self.eta_min, verbose=True)
+            _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=0.99, verbose=True)
 
-        _temp_scheduler_dict["Adversary"] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizers["Adversary"], self.T0, self.T_mult, self.eta_min, verbose=True)        
+        # _temp_scheduler_dict["Adversary"] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizers["Adversary"], self.T0, self.T_mult, self.eta_min, verbose=True)        
 
         return _temp_scheduler_dict
 
@@ -559,8 +560,6 @@ class AbstractGenerativeModel(ABC):
                 if save_images_every is not None and step % save_images_every == 0:
                     # self._log_images(images=self.generate_batch(X_batch=torch.tensor(test_data).to(device=self.device,  dtype=torch.float)), step=step, writer=writer_train)
                     images_ = self.generate_batch(X_batch=self.test_x_batch)
-                    print(images_[0][0])
-
                     self._log_images(images=images_, step=step, writer=writer_train)
                     images_.detach().cpu()
                     self._save_losses_plot()
@@ -974,7 +973,7 @@ class AbstractGenerativeModel(ABC):
         return nr_params_dict
 
 
-    def eval_batch(self, x_test_dataloader, type, results_path=None):
+    def eval_batch(self, x_test_dataloader, type, calc_losses=False, results_path=None):
         self.eval()
 
         
@@ -998,7 +997,10 @@ class AbstractGenerativeModel(ABC):
         
         torch.cuda.empty_cache()
 
-        losses_dict = self.generate_dataset_losses(x_test_dataloader, results_folder)
+        losses_dict = None
+
+        if calc_losses == True:
+            losses_dict = self.generate_dataset_losses(x_test_dataloader, results_folder)
 
         return losses_dict
 

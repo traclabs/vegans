@@ -36,13 +36,13 @@ class DatasetLoader(ABC):
         else:
             self._root = root
         self.path = self._get_path_dataset()
-
-    def load(self):
+        
+    def load(self, safe=True):
         """
         Load the dataset in memory, as numpy arrays.
         Downloads the dataset if it is not present _is_already_downloaded
         """
-        if not self._is_already_downloaded():
+        if safe and not self._is_already_downloaded():
             self._download_dataset()
         return self._load_from_disk()
 

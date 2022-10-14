@@ -79,6 +79,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
         self.generator = Generator(generator, input_size=z_dim, device=device, ngpu=ngpu, secure=secure)
         self.adversary = Adversary(adversary, input_size=x_dim, adv_type=adv_type, device=device, ngpu=ngpu, secure=secure)
         self.encoder = Encoder(encoder, input_size=x_dim, device=device, ngpu=ngpu, secure=secure)
+        # self.encoder = encoder
         self.neural_nets = {
             "Encoder": self.encoder, "Generator": self.generator, "Adversary": self.adversary
         }
@@ -217,6 +218,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
         variances = torch.exp(logvar * 0.5)
 
         sample_from_normal = torch.autograd.Variable(torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device), requires_grad=requires_grad)
+        
         # shift and scale using the means and variances
         latent_z_sample = sample_from_normal * variances + mu
         
