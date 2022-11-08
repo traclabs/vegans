@@ -134,7 +134,7 @@ class AbstractGenerativeModel(ABC):
 
         for k, v in self.optimizers.items():
             # _temp_scheduler_dict[k] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(v, self.T0, self.T_mult, self.eta_min, verbose=True)
-            _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=0.99, verbose=True)
+            _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=self.lr_decay, verbose=True)
 
         # _temp_scheduler_dict["Adversary"] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizers["Adversary"], self.T0, self.T_mult, self.eta_min, verbose=True)        
 
@@ -418,7 +418,8 @@ class AbstractGenerativeModel(ABC):
     # Actions during training
     #########################################################################
     def fit(self, X_train, X_test=None, epochs=5, batch_size=32, steps=None,
-        print_every="1e", save_model_every=None, save_images_every=None, save_losses_every="1e", enable_tensorboard=False):
+        print_every="1e", save_model_every=None, save_images_every=None, save_losses_every="1e",
+        enable_tensorboard=False, checkpnt_path=None):
         """ Trains the model, iterating over all contained networks.
 
         Parameters
@@ -491,6 +492,10 @@ class AbstractGenerativeModel(ABC):
 
         # log the images without doing anything to them... for comparsion
         # print(test_x_batch)
+        start_epch_ = 0
+
+        if checkpnt_path is not None:
+            start_epch_ = self._load_models(checkpnt_path, training=True) + 1
 
         self.train()
         if save_images_every is not None:
@@ -500,7 +505,7 @@ class AbstractGenerativeModel(ABC):
             self.test_x_batch.to("cpu")
             self._log_images(images=images_, step=0, writer=writer_train)
 
-        for epoch in range(epochs):
+        for epoch in range(start_epch_, epochs):
             self.epoch_ctr_ = epoch
             epoch_losses_ = None
 
@@ -528,7 +533,8 @@ class AbstractGenerativeModel(ABC):
                         else:
                             epoch_losses_.update(self._losses)
 
-                        self._backward(who=name)
+                        # we are stepping backwards (back-proping) in the calculate losses call above
+                        # self._backward(who=name)
                         self._step(who=name)
 
                 # we are outside of the main learning-loop, now report stuff
@@ -689,7 +695,7 @@ class AbstractGenerativeModel(ABC):
             )
         )
         print("\n")
-        print("Average Time Per Epoch ~{} minutes".format(time_per_batch * max_batches))
+        print("Average Time Per Epoch ~{} minutes".format(np.round(time_per_batch * max_batches / 60.0, 3)))
         self.current_timer = time.perf_counter()
 
     def _log_images(self, images, step, writer, labels=None):
@@ -955,6 +961,8 @@ class AbstractGenerativeModel(ABC):
         
         for key, value in self.get_hyperparameters().items():
             print("{}: ---> {}".format(str(key), str(value)))
+
+        print("Learning rate decay: %.8f\n" % self.lr_decay)
         if save:
             sys.stdout = sys_stdout_temp
             sys_stdout_temp
@@ -1129,5 +1137,5 @@ class AbstractGenerativeModel(ABC):
         pass
 
 
-    def _load_models(self, epoch, name=None):
+    def _load_models(self, path=None, who=None, training=False):
         pass

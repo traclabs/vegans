@@ -232,5 +232,5 @@ class AbstractGANGAE(AbstractGenerativeModel):
     def _save_models(self, epoch, name=None):
         pass
 
-    def _load_models(self, epoch, name=None):
+    def _load_models(self, path=None, who=None, training=False):
         pass

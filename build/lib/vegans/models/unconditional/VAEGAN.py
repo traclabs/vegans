@@ -22,7 +22,10 @@ References
 """
 
 from random import random
+from tkinter.tix import X_REGION
 import torch
+import random
+import sys
 
 import numpy as np
 import torch.nn as nn
@@ -103,7 +106,11 @@ class VAEGAN(AbstractGANGAE):
             T_mult=1,
             eta_min=1e-6,
             warm_steps=5,
-            cycle=5):
+            cycle=5,
+            recon_fixed_epochs=5,
+            recon_warmup_epochs=10,
+            recon_max_weight=1e-5,
+            recon_lambda=0.5):
 
 
         super().__init__(
@@ -125,6 +132,18 @@ class VAEGAN(AbstractGANGAE):
         self.steps_per_epoch = steps_per_epoch      # number of steps per epoch (size of dataset / batch_size)
         self.warmup_steps = warm_steps              # number of epochs we want the kl to "warm up" or increase
 
+        # reconstruction weight warm-up details
+        self.recon_max_weight = recon_max_weight
+        self.recon_fixed_epochs = recon_fixed_epochs
+        self.recon_warmup_epochs = recon_warmup_epochs
+
+        self.recon_weight_gamma_gen = recon_lambda
+        self.recon_weight_gamma_enc = recon_lambda
+
+        self.recon_weight_diff = self.recon_max_weight - recon_lambda
+
+        print("VAEGAN - self.recon_weight_diff: %.4f" % self.recon_weight_diff)
+
         if self.secure:
             # TODO
             # if self.encoder.output_size == self.z_dim:
@@ -139,7 +158,7 @@ class VAEGAN(AbstractGANGAE):
 
     def _define_loss(self):
         loss_functions = super()._define_loss()
-        loss_functions.update({"Reconstruction": nn.MSELoss(reduction="sum")})
+        loss_functions.update({"Reconstruction": nn.L1Loss(reduction="sum")})
         return loss_functions
 
     #########################################################################
@@ -195,23 +214,33 @@ class VAEGAN(AbstractGANGAE):
         real_x_features = self.adversary.network._get_feature_layer_activations()
 
         # calculate the reconstruction loss for the fake_x features
-        recon_loss_x = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
+        recon_loss_x = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_x_features)*(1 - self.recon_weight_gamma_gen)
 
         # accumulate gradient
         recon_loss_x.backward(retain_graph=True)
-        # calcualte the reconstruction loss for the fake_z features
-        recon_loss_z = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
 
-        # accumulate gradient
-        recon_loss_z.backward(retain_graph=True)
+        # # calculate the reconstruction loss for the fake_z features
+        # recon_loss_z = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
+
+        # # accumulate gradient
+        # recon_loss_z.backward(retain_graph=True)
+
+        # Experimental!!!!
+
+        # calculate the pixel-level L1 Reconstruction loss
+        l1_loss = (self.lambda_x)*self.loss_functions["Reconstruction"](X_batch, fake_x)*self.recon_weight_gamma_gen
+
+        # accumulate the gradient
+        l1_loss.backward(retain_graph=True)
 
         #    add to get the total loss
         loss_decoder = gen_loss_fake_x + gen_loss_fake_z
 
-        total_recon_loss = recon_loss_x + recon_loss_z
+        # total_recon_loss = recon_loss_x + recon_loss_z + l1_loss
+        total_recon_loss = (1 - self.recon_weight_gamma_gen)*(recon_loss_x) + self.recon_weight_gamma_gen*l1_loss
 
         gen_loss = loss_decoder + total_recon_loss
-            
+        
         # clean just to be safe
         torch.cuda.empty_cache()
 
@@ -219,6 +248,7 @@ class VAEGAN(AbstractGANGAE):
             "Generator": gen_loss,
             "Generator_x": gen_loss_fake_x,
             "Generator_z": gen_loss_fake_z,
+            "L1Loss - Gen" : l1_loss,
             "Reconstruction_Gen": total_recon_loss
         }
 
@@ -249,7 +279,9 @@ class VAEGAN(AbstractGANGAE):
         recon_images = self.generator(latent_z_sample)
 
         # calcualte the KL between the latent dist and the prior dist
-        kl_loss = torch.sum(0.5*(logvar.exp() + mu**2 - logvar - 1))
+        kl_loss = torch.sum(0.5*(logvar.exp() + mu**2 - logvar - 1)) # suspect
+
+        # kl_loss = torch.sum(0.5*(logvar.exp() + mu**2 - logvar - 1))
 
         kl_loss = self.lambda_KL * kl_loss
 
@@ -262,11 +294,6 @@ class VAEGAN(AbstractGANGAE):
             pred_fake_x.detach(), torch.zeros_like(pred_fake_x.detach(), requires_grad=False).detach()
         )
 
-        # get the preds for a randomly generate set of samples
-        fake_z_images = self.generator(Z_batch)
-        _ = self.adversary(fake_z_images)
-        fake_z_features = self.adversary.network._get_feature_layer_activations()
-
         # get the features for the unmodified input
         _ = self.adversary(X_batch)
         real_x_features = self.adversary.network._get_feature_layer_activations()
@@ -276,18 +303,22 @@ class VAEGAN(AbstractGANGAE):
         recon_loss_x = self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
 
         # accumulate gradient
-        recon_loss_x.backward(retain_graph=True)
+        # recon_loss_x.backward(retain_graph=True)
 
-        # calcualte the reconstruction loss for the fake_z features
-        recon_loss_z = self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
+        # Experimental!!!!
+        # calculate the pixel-level L1 Reconstruction loss
+        l1_loss = self.loss_functions["Reconstruction"](X_batch, recon_images)
 
-        # accumulate gradient
-        recon_loss_z.backward(retain_graph=True)
+        # accumulate the gradient
+        # l1_loss.backward(retain_graph=True)
 
-        total_recon_loss = recon_loss_x + recon_loss_z
+        # total_recon_loss = recon_loss_x + recon_loss_z + l1_loss
+        total_recon_loss = (1 - self.recon_weight_gamma_enc)*(recon_loss_x) + self.recon_weight_gamma_enc*l1_loss
         
         # The authors do not apply the KL lambda weight to the encoder
         enc_loss = (kl_loss + total_recon_loss)
+
+        enc_loss.backward(retain_graph=True)
 
         # print("Encoder Loss")
         # print(enc_loss)
@@ -296,13 +327,20 @@ class VAEGAN(AbstractGANGAE):
         self.lambda_KL = min(self.lambda_KL_max, self.lambda_KL + 1.0 / (self.warmup_steps * self.steps_per_epoch))
 
         # print(self.lambda_KL)
+        # update the encoder recon lambda value value
+        if (self.epoch_ctr_+1) > self.recon_fixed_epochs:
+            # TODO: EWWWW Hardcoded badness!!!! Fix later...
+            self.recon_weight_gamma_enc = min(self.recon_max_weight, self.recon_weight_gamma_enc + self.recon_weight_diff / (self.recon_warmup_epochs * self.steps_per_epoch))
+            # print("Updating reconstruction weight!!!: %.6f" % self.recon_weight_gamma_enc)
 
         return {
             "Encoder": enc_loss,
             "Encoder_x": enc_loss_fake_x,
             "Kullback-Leibler": kl_loss,
+            "L1Loss-Enc" : l1_loss,
             "Reconstruction_Enc": total_recon_loss
         }
+        
 
     def _calculate_adversary_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
 
@@ -312,10 +350,19 @@ class VAEGAN(AbstractGANGAE):
         # calculate stats using real batch data
         real_preds = self.adversary(X_batch)
         
+        cleaned_labels = self.clean_discriminatoir_labels(torch.ones_like(real_preds, requires_grad=True))
+
         # calculate the loss on the real data
-        adv_loss_real = self.loss_functions["Adversary"](
-            real_preds, self.clean_discriminatoir_labels(torch.ones_like(real_preds, requires_grad=True))
-        )
+        adv_loss_real = self.loss_functions["Adversary"](real_preds, cleaned_labels)
+
+        # randomly print off the predictions
+        rand_val = random.uniform(0, 1)
+
+        if rand_val > 0.99:
+            print("Sum of Positive Adversary Real Predictions")
+            positive_sum = np.sum(real_preds.detach().cpu().reshape(-1, 1).numpy() > 0)
+            print(positive_sum)
+            sys.stdout.flush()
 
         # step this loss backwards
         adv_loss_real.backward(retain_graph=True)
@@ -338,19 +385,22 @@ class VAEGAN(AbstractGANGAE):
         # calculate gradients for this batch, accumulate with previous
         adv_loss_fake_x.backward(retain_graph=True)
         
-        # now train with all-fake data
-        #    detaching based on DCGAN example-code
-        fake_preds_z = self.adversary(fake_z)
+        # # now train with all-fake data
+        # #    detaching based on DCGAN example-code
+        # fake_preds_z = self.adversary(fake_z)
 
-        # calculate the loss value
-        adv_loss_fake_z = self.loss_functions["Adversary"](
-            fake_preds_z, torch.zeros_like(fake_preds_z, requires_grad=False)
-        )
+        # # calculate the loss value
+        # adv_loss_fake_z = self.loss_functions["Adversary"](
+        #     fake_preds_z, torch.zeros_like(fake_preds_z, requires_grad=False)
+        # )
         
-        # update the loss value for this batch, accumulate graident with previous
-        adv_loss_fake_z.backward(retain_graph=True)
+        # # update the loss value for this batch, accumulate gradient with previous
+        # adv_loss_fake_z.backward(retain_graph=True)
 
-        adv_loss = (adv_loss_fake_z + adv_loss_fake_x + adv_loss_real)
+        # adv_loss = (adv_loss_fake_z + adv_loss_fake_x + adv_loss_real)
+
+        adv_loss = (adv_loss_fake_x + adv_loss_real)
+
 
         # print("Discriminator Loss:")
         # print(adv_loss)
@@ -361,7 +411,7 @@ class VAEGAN(AbstractGANGAE):
         return {
             "Adversary": adv_loss,
             "Adversary_fake_x": adv_loss_fake_x,
-            "Adversary_fake_z": adv_loss_fake_z,
+            # "Adversary_fake_z": adv_loss_fake_z,
             "Adversary_real": adv_loss_real,
             "RealFakeRatio": adv_loss_real / adv_loss_fake_x
         }
@@ -370,7 +420,7 @@ class VAEGAN(AbstractGANGAE):
     def label_smoothing_(self, y):
         rand_vec = torch.rand(y.size())
         rand_vec = rand_vec.to(device=self.device)
-        temp_ = y - 0.3 + (rand_vec*0.5)              # labels between [0.7, 1.2]
+        temp_ = y - 0.2 + (rand_vec*0.5)              # labels between [0.7, 1.2]
         temp_[temp_ < 0] = 0                          # can't have negative label values, unnecessary if doing one-sided label smoothing
         return temp_
 
@@ -470,8 +520,8 @@ class VAEGAN(AbstractGANGAE):
                 self.lr_schedulers["Generator"].load_state_dict(check_point["decoder_lr_state"])
                 self.lr_schedulers["Adversary"].load_state_dict(check_point["discriminator_lr_state"])
 
-                # load the loss dict
-                self._losses = check_point["losses"]
+                # # load the loss dict
+                # self._losses = check_point["losses"]
 
         # return the epoch this model was saved at
         return epoch_
