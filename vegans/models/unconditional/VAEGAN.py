@@ -219,12 +219,6 @@ class VAEGAN(AbstractGANGAE):
         # accumulate gradient
         recon_loss_x.backward(retain_graph=True)
 
-        # # calculate the reconstruction loss for the fake_z features
-        # recon_loss_z = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_z_features)
-
-        # # accumulate gradient
-        # recon_loss_z.backward(retain_graph=True)
-
         # Experimental!!!!
 
         # calculate the pixel-level L1 Reconstruction loss
