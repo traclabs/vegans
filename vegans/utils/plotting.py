@@ -100,7 +100,7 @@ def plot_images(images, labels=None, show=True, n=None):
         ax.imshow(images[i])
         ax.axis("off")
         if labels is not None:
-            ax.set_title("Label: {}".format(labels[i]))
+            ax.set_title("Label: {:.4f}".format(labels[i]))
 
     fig.tight_layout()
     if show:

@@ -231,7 +231,8 @@ class VAEGAN(AbstractGANGAE):
         loss_decoder = gen_loss_fake_x + gen_loss_fake_z
 
         # total_recon_loss = recon_loss_x + recon_loss_z + l1_loss
-        total_recon_loss = (1 - self.recon_weight_gamma_gen)*(recon_loss_x) + self.recon_weight_gamma_gen*l1_loss
+        # total_recon_loss = (1 - self.recon_weight_gamma_gen)*(recon_loss_x) + self.recon_weight_gamma_gen*l1_loss
+        total_recon_loss = (recon_loss_x) + l1_loss
 
         gen_loss = loss_decoder + total_recon_loss
         
