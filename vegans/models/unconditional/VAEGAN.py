@@ -102,9 +102,6 @@ class VAEGAN(AbstractGANGAE):
             folder="./veganModels/VAEGAN",
             secure=True,
             lr_decay=0.9,
-            T0=5,
-            T_mult=1,
-            eta_min=1e-6,
             warm_steps=5,
             cycle=5,
             recon_fixed_epochs=5,
@@ -116,26 +113,26 @@ class VAEGAN(AbstractGANGAE):
         super().__init__(
             generator=generator, adversary=adversary, encoder=encoder,
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, adv_type=adv_type, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay, T0=T0,
-            T_mult=T_mult, eta_min=eta_min
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay
         )
 
         self.lambda_KL = lambda_KL
         self.lambda_x = lambda_x
         self.hyperparameters["lambda_KL"] = lambda_KL
         self.hyperparameters["lambda_x"] = lambda_x
-        self.cycle = cycle
-        self.last_reset_epoch = 0
+
 
         # HACK - done by hand... do so automatically later
         self.lambda_KL_max = 1.0                    # maximum value we will allow the kl weight to reach  
         self.steps_per_epoch = steps_per_epoch      # number of steps per epoch (size of dataset / batch_size)
         self.warmup_steps = warm_steps              # number of epochs we want the kl to "warm up" or increase
+        self.cycle = cycle                          # the cycle length of the KL-cyclical weighting schedule
+        self.last_reset_epoch = 0                   # tracks the last epoch we reset the KL-weighting
 
         # reconstruction weight warm-up details
-        self.recon_max_weight = recon_max_weight
-        self.recon_fixed_epochs = recon_fixed_epochs
-        self.recon_warmup_epochs = recon_warmup_epochs
+        self.recon_max_weight = recon_max_weight        # the minimum weight of the pixel-level L1-loss for the encoder
+        self.recon_fixed_epochs = recon_fixed_epochs    # the number of epochs to keep the pixel-level weight fixed BEFORE adjusting
+        self.recon_warmup_epochs = recon_warmup_epochs  # the number of epochs we want to decrease the pixel-level loss term to the min
 
         self.recon_weight_gamma_gen = recon_lambda
         self.recon_weight_gamma_enc = recon_lambda

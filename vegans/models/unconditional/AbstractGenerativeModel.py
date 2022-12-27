@@ -55,7 +55,7 @@ class AbstractGenerativeModel(ABC):
     #########################################################################
     # Actions before training
     #########################################################################
-    def __init__(self, x_dim, z_dim, optim, optim_kwargs, feature_layer, fixed_noise_size, device, ngpu, folder, secure, lr_decay, T0, T_mult, eta_min):
+    def __init__(self, x_dim, z_dim, optim, optim_kwargs, feature_layer, fixed_noise_size, device, ngpu, folder, secure, lr_decay):
         self.x_dim = tuple([x_dim]) if isinstance(x_dim, int) else tuple(x_dim)
         self.z_dim = tuple([z_dim]) if isinstance(z_dim, int) else tuple(z_dim)
         self.ngpu = ngpu if ngpu is not None else 0
@@ -63,9 +63,6 @@ class AbstractGenerativeModel(ABC):
         self.fixed_noise_size = fixed_noise_size
         self.device = device
         self.lr_decay = lr_decay
-        self.T_mult = T_mult
-        self.T0 = T0
-        self.eta_min = eta_min
 
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -133,10 +130,8 @@ class AbstractGenerativeModel(ABC):
         _temp_scheduler_dict = {}
 
         for k, v in self.optimizers.items():
-            # _temp_scheduler_dict[k] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(v, self.T0, self.T_mult, self.eta_min, verbose=True)
             _temp_scheduler_dict[k] = torch.optim.lr_scheduler.ExponentialLR(v, gamma=self.lr_decay, verbose=True)
 
-        # _temp_scheduler_dict["Adversary"] = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizers["Adversary"], self.T0, self.T_mult, self.eta_min, verbose=True)        
 
         return _temp_scheduler_dict
 
