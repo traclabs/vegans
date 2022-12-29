@@ -105,7 +105,11 @@ class CelebALoader(DatasetLoader):
                 image = image.resize((self.output_shape, self.output_shape), Image.BILINEAR)
                 image =  np.array([np.array(image)])
                 image = invert_channel_order(images=image)[0, :]
-                return image / 255
+                
+                # scale from [0,255] to [-1,1]
+                image = (image - 127.5) / 127.5
+
+                return image
 
         self._check_dataset_integrity_or_raise(
             path=os.path.join(self._root, "CelebA/list_attr_celeba.csv"), expected_hash=self._metadata.m5hashes["targets"]

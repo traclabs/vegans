@@ -1,9 +1,11 @@
 import torch
 
-from torch.nn import BCELoss
+from torch.nn import BCELoss, BCEWithLogitsLoss
 from vegans.utils import WassersteinLoss
 from vegans.utils.networks import Generator, Adversary, Encoder
 from vegans.models.unconditional.AbstractGenerativeModel import AbstractGenerativeModel
+
+import numpy as np
 
 
 class AbstractGANGAE(AbstractGenerativeModel):
@@ -67,19 +69,25 @@ class AbstractGANGAE(AbstractGenerativeModel):
             folder=None,
             ngpu=0,
             secure=True,
+            lr_decay=0.9,
+            T0=5,
+            T_mult=1,
+            eta_min=1e-6,
             _called_from_conditional=False):
 
         self.adv_type = adv_type
         self.generator = Generator(generator, input_size=z_dim, device=device, ngpu=ngpu, secure=secure)
         self.adversary = Adversary(adversary, input_size=x_dim, adv_type=adv_type, device=device, ngpu=ngpu, secure=secure)
         self.encoder = Encoder(encoder, input_size=x_dim, device=device, ngpu=ngpu, secure=secure)
+        # self.encoder = encoder
         self.neural_nets = {
-            "Generator": self.generator, "Adversary": self.adversary, "Encoder": self.encoder
+            "Encoder": self.encoder, "Generator": self.generator, "Adversary": self.adversary
         }
 
         super().__init__(
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay,
+            T0=T0, T_mult=T_mult, eta_min=eta_min
         )
         self.hyperparameters["adv_type"] = adv_type
         if not _called_from_conditional and self.secure:
@@ -89,7 +97,7 @@ class AbstractGANGAE(AbstractGenerativeModel):
 
     def _define_loss(self):
         if self.adv_type == "Discriminator":
-            loss_functions = {"Generator": BCELoss(), "Adversary": BCELoss()}
+            loss_functions = {"Generator": BCEWithLogitsLoss(), "Adversary": BCEWithLogitsLoss(), "Encoder": BCEWithLogitsLoss()}
         elif self.adv_type == "Critic":
             loss_functions = {"Generator": WassersteinLoss(), "Adversary": WassersteinLoss()}
         else:
@@ -124,6 +132,8 @@ class AbstractGANGAE(AbstractGenerativeModel):
             losses = self._calculate_generator_loss(X_batch=X_batch, Z_batch=Z_batch)
             losses.update(self._calculate_adversary_loss(X_batch=X_batch, Z_batch=Z_batch))
             losses.update(self._calculate_encoder_loss(X_batch=X_batch, Z_batch=Z_batch))
+            
+            # print("calculated all the losses!!!!!!!!!!!!!!!!")
         return losses
 
     def _step(self, who=None):
@@ -142,3 +152,85 @@ class AbstractGANGAE(AbstractGenerativeModel):
     #########################################################################
     def encode(self, x):
         return self.encoder(x)
+
+
+    def generate_(self, X_batch=None, Z_batch=None):
+        mu = None
+        logvar = None
+        total_preds = None
+        discrim_features = None
+        if X_batch is not None:
+            mu, logvar = self.encoder(X_batch)
+
+            # do not detach, as we want grad to flow from the decoder into the encoder
+            mu = mu
+            logvar = logvar
+
+            # we need the true variances, not the log vars
+            variances = torch.exp(logvar * 0.5)
+            #sample from a Guassian
+            if self.training:
+                sample_from_normal = torch.autograd.Variable(torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device), requires_grad=True)
+            else:
+                sample_from_normal = torch.autograd.Variable(torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device), requires_grad=False)
+
+            # shift and scale using the means and variances
+            latent_z_sample = sample_from_normal * variances + mu
+
+            # use latent sample to generate an output image
+            generated_images = self.generator(latent_z_sample)
+
+            # now get the discriminator feature info
+            # start by concatonating the reconstructed, real and fake images batch-wise
+            generated_images_z = self.generator(Z_batch)
+            # detach, as we don't want the gradient to flow into the generator
+
+            #     the discriminator and the generator are trained entirely separately
+            #     not the case for VAE component because encoder and decoder are "attached" and SHOULD grad into eachother
+            dis_x_prime = torch.cat((generated_images.detach(), X_batch, generated_images_z.detach()), 0)
+
+            # pass the whole thing to the discriminator
+            total_preds = self.adversary(dis_x_prime)
+
+            # get the feature activations
+            discrim_features = self.adversary.network._get_feature_layer_activations()
+
+        elif Z_batch is not None:
+            # use normal sample to generate an output image
+            generated_images = self.generator(Z_batch)
+        
+        else: # generate an image from a random sample
+            #sample from a Guassian
+            if self.training:
+                sample_from_normal = torch.autograd.Variable(torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device), requires_grad=True)
+            else:
+                sample_from_normal = torch.autograd.Variable(torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device), requires_grad=False)
+
+            # use normal sample to generate an output image
+            generated_images= self.generator(sample_from_normal)
+        
+        return mu, logvar, generated_images, total_preds, discrim_features
+
+    def generate_batch(self, X_batch, requires_grad=False):
+        mu, logvar = self.encoder(X_batch)
+        
+        # we need the true variances, not the log vars
+        variances = torch.exp(logvar * 0.5)
+
+        sample_from_normal = torch.autograd.Variable(torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device), requires_grad=requires_grad)
+        
+        # shift and scale using the means and variances
+        latent_z_sample = sample_from_normal * variances + mu
+        
+        # use latent sample to generate an output image
+        generated_images = self.generator(latent_z_sample)
+
+        return generated_images
+
+
+    
+    def _save_models(self, epoch, name=None):
+        pass
+
+    def _load_models(self, path=None, who=None, training=False):
+        pass

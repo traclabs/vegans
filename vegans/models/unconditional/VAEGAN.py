@@ -21,10 +21,15 @@ References
 .. [1] https://arxiv.org/pdf/1512.09300.pdf
 """
 
+from random import random
+from tkinter.tix import X_REGION
 import torch
+import random
+import sys
 
 import numpy as np
 import torch.nn as nn
+import os
 
 from torch.nn import L1Loss
 from vegans.utils.layers import LayerReshape
@@ -84,6 +89,7 @@ class VAEGAN(AbstractGANGAE):
             encoder,
             x_dim,
             z_dim,
+            steps_per_epoch,
             optim=None,
             optim_kwargs=None,
             lambda_KL=10,
@@ -94,29 +100,49 @@ class VAEGAN(AbstractGANGAE):
             device=None,
             ngpu=0,
             folder="./veganModels/VAEGAN",
-            secure=True):
+            secure=True,
+            lr_decay=0.9,
+            T0=5,
+            T_mult=1,
+            eta_min=1e-6,
+            warm_steps=5,
+            cycle=5,
+            recon_fixed_epochs=5,
+            recon_warmup_epochs=10,
+            recon_max_weight=1e-5,
+            recon_lambda=0.5):
 
 
         super().__init__(
             generator=generator, adversary=adversary, encoder=encoder,
             x_dim=x_dim, z_dim=z_dim, optim=optim, optim_kwargs=optim_kwargs, adv_type=adv_type, feature_layer=feature_layer,
-            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure
+            fixed_noise_size=fixed_noise_size, device=device, ngpu=ngpu, folder=folder, secure=secure, lr_decay=lr_decay, T0=T0,
+            T_mult=T_mult, eta_min=eta_min
         )
-        self.mu = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(np.prod(self.encoder.output_size), np.prod(z_dim)),
-            LayerReshape(shape=z_dim)
-        ).to(self.device)
-        self.log_variance = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(np.prod(self.encoder.output_size), np.prod(z_dim)),
-            LayerReshape(shape=z_dim)
-        ).to(self.device)
 
         self.lambda_KL = lambda_KL
         self.lambda_x = lambda_x
         self.hyperparameters["lambda_KL"] = lambda_KL
         self.hyperparameters["lambda_x"] = lambda_x
+        self.cycle = cycle
+        self.last_reset_epoch = 0
+
+        # HACK - done by hand... do so automatically later
+        self.lambda_KL_max = 1.0                    # maximum value we will allow the kl weight to reach  
+        self.steps_per_epoch = steps_per_epoch      # number of steps per epoch (size of dataset / batch_size)
+        self.warmup_steps = warm_steps              # number of epochs we want the kl to "warm up" or increase
+
+        # reconstruction weight warm-up details
+        self.recon_max_weight = recon_max_weight
+        self.recon_fixed_epochs = recon_fixed_epochs
+        self.recon_warmup_epochs = recon_warmup_epochs
+
+        self.recon_weight_gamma_gen = recon_lambda
+        self.recon_weight_gamma_enc = recon_lambda
+
+        self.recon_weight_diff = self.recon_max_weight - recon_lambda
+
+        print("VAEGAN - self.recon_weight_diff: %.4f" % self.recon_weight_diff)
 
         if self.secure:
             # TODO
@@ -124,7 +150,7 @@ class VAEGAN(AbstractGANGAE):
             #     raise ValueError(
             #         "Encoder output size is equal to z_dim, but for VAE algorithms the encoder last layers for mu and sigma " +
             #         "are constructed by the algorithm itself.\nSpecify up to the second last layer for this particular encoder."
-            #     )
+            #     ) T0, T_mult
             assert (self.generator.output_size == self.x_dim), (
                 "Generator output shape must be equal to x_dim. {} vs. {}.".format(self.generator.output_size, self.x_dim)
             )
@@ -132,103 +158,365 @@ class VAEGAN(AbstractGANGAE):
 
     def _define_loss(self):
         loss_functions = super()._define_loss()
-        loss_functions.update({"Reconstruction": L1Loss()})
+        loss_functions.update({"Reconstruction": nn.L1Loss(reduction="sum")})
         return loss_functions
-
 
     #########################################################################
     # Actions during training
     #########################################################################
+
+    # Good!
+    #    Updating with maximization trick -> maximize log(D(G(z))) instead of min log(1 - D(G(Z)))
     def _calculate_generator_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
-        if fake_images_x is None:
-            encoded_output = self.encode(x=X_batch)
-            mu = self.mu(encoded_output)
-            log_variance = self.log_variance(encoded_output)
-            Z_batch_encoded = mu + torch.exp(log_variance)*Z_batch
-            fake_images_x = self.generate(z=Z_batch_encoded.detach())
-        if fake_images_z is None:
-            fake_images_z = self.generate(Z_batch)
+        
+        # based on Pytorch - DCGAN example
+        self._zero_grad(who="Generator")
 
-        if self.feature_layer is None:
-            fake_predictions_x = self.predict(x=fake_images_x)
-            fake_predictions_z = self.predict(x=fake_images_z)
+        ## Calculate the predication (GAN) based loss
+        # generate the images
+        fake_x = self.generate_batch(X_batch=X_batch, requires_grad=True)
 
-            gen_loss_fake_x = self.loss_functions["Generator"](
-                fake_predictions_x, torch.ones_like(fake_predictions_x, requires_grad=False)
-            )
-            gen_loss_fake_z = self.loss_functions["Generator"](
-                fake_predictions_z, torch.ones_like(fake_predictions_z, requires_grad=False)
-            )
-        else:
-            gen_loss_fake_x = self._calculate_feature_loss(X_real=X_batch, X_fake=fake_images_x)
-            gen_loss_fake_z = self._calculate_feature_loss(X_real=X_batch, X_fake=fake_images_z)
-        gen_loss_reconstruction = self.loss_functions["Reconstruction"](
-            fake_images_x, X_batch
+        # # generate the predictions for these images
+        pred_fake_x = self.adversary(fake_x)
+
+        # for future use
+        fake_x_features = self.adversary.network._get_feature_layer_activations().detach()
+
+        gen_loss_fake_x = self.loss_functions["Generator"](
+            pred_fake_x, torch.ones_like(pred_fake_x, requires_grad=True)
         )
 
-        gen_loss = 1/3*(gen_loss_fake_x + gen_loss_fake_z + self.lambda_x*gen_loss_reconstruction)
+        # calculate / accumulate the loss
+        gen_loss_fake_x.backward(retain_graph=True)
+
+        # generate fake_z images
+        fake_z = self.generator(Z_batch)
+
+        pred_fake_z = self.adversary(fake_z)
+
+        # for future use
+        fake_z_features = self.adversary.network._get_feature_layer_activations().detach()
+
+        gen_loss_fake_z = self.loss_functions["Generator"](
+            pred_fake_z, torch.ones_like(pred_fake_z, requires_grad=True)
+        )
+
+        # calculate / accumulate loss
+        gen_loss_fake_z.backward(retain_graph=True)
+        ## end GAN loss calculations
+
+        ## calculate reconstruction loss
+        # get the discriminator features
+
+        _ = self.adversary(X_batch.detach())
+        
+        
+        real_x_features = self.adversary.network._get_feature_layer_activations()
+
+        # calculate the reconstruction loss for the fake_x features
+        recon_loss_x = (self.lambda_x)*self.loss_functions["Reconstruction"](real_x_features, fake_x_features)*(1 - self.recon_weight_gamma_gen)
+
+        # accumulate gradient
+        recon_loss_x.backward(retain_graph=True)
+
+        # Experimental!!!!
+
+        # calculate the pixel-level L1 Reconstruction loss
+        l1_loss = (self.lambda_x)*self.loss_functions["Reconstruction"](X_batch, fake_x)*self.recon_weight_gamma_gen
+
+        # accumulate the gradient
+        l1_loss.backward(retain_graph=True)
+
+        #    add to get the total loss
+        loss_decoder = gen_loss_fake_x + gen_loss_fake_z
+
+        # total_recon_loss = recon_loss_x + recon_loss_z + l1_loss
+        # total_recon_loss = (1 - self.recon_weight_gamma_gen)*(recon_loss_x) + self.recon_weight_gamma_gen*l1_loss
+        total_recon_loss = (recon_loss_x) + l1_loss
+
+        gen_loss = loss_decoder + total_recon_loss
+        
+        # clean just to be safe
+        torch.cuda.empty_cache()
+
         return {
             "Generator": gen_loss,
             "Generator_x": gen_loss_fake_x,
             "Generator_z": gen_loss_fake_z,
-            "Reconstruction": gen_loss_reconstruction
+            "L1Loss - Gen" : l1_loss,
+            "Reconstruction_Gen": total_recon_loss
         }
 
     def _calculate_encoder_loss(self, X_batch, Z_batch, fake_images_x=None):
-        encoded_output = self.encode(x=X_batch)
-        mu = self.mu(encoded_output)
-        log_variance = self.log_variance(encoded_output)
-        if fake_images_x is None:
-            Z_batch_encoded = mu + torch.exp(log_variance)*Z_batch
-            fake_images_x = self.generate(z=Z_batch_encoded)
+        
+        # check KL weight cycle stuff
+        if self.epoch_ctr_ % self.cycle == 0 and self.epoch_ctr_ != 0 and self.last_reset_epoch != self.epoch_ctr_:
+            # reset KL divergence to small value 
+            self.lambda_KL = 0.01
+            self.last_reset_epoch = self.epoch_ctr_
+            print("----- Resetting KL weight!!!! %.4f -----" % self.lambda_KL)
 
-        fake_predictions_x = self.predict(x=fake_images_x)
 
-        enc_loss_fake_x = self.loss_functions["Generator"](
-            fake_predictions_x, torch.ones_like(fake_predictions_x, requires_grad=False)
+        # based on Pytorch - DCGAN example
+        self._zero_grad(who="Encoder")
+
+        # use the encoder to get the values
+        mu, logvar = self.encoder(X_batch)
+
+        # get the actual prob instead of log-prob
+        variances = torch.exp(logvar * 0.5)
+        
+        # do the reparam trick
+        sample_from_normal = torch.randn((len(X_batch), np.prod(self.z_dim)), device=self.device, requires_grad=True)
+        latent_z_sample = sample_from_normal * variances + mu
+
+        # get the reconstructed images
+        recon_images = self.generator(latent_z_sample)
+
+        # calcualte the KL between the latent dist and the prior dist
+        kl_loss = torch.sum(0.5*(logvar.exp() + mu**2 - logvar - 1)) # suspect
+
+        # kl_loss = torch.sum(0.5*(logvar.exp() + mu**2 - logvar - 1))
+
+        kl_loss = self.lambda_KL * kl_loss
+
+        # calculate the preds for the reconstructed input
+        pred_fake_x = self.adversary(recon_images)
+        fake_x_features = self.adversary.network._get_feature_layer_activations().detach()
+
+        # only used for reporting, not learning
+        enc_loss_fake_x = self.loss_functions["Encoder"](
+            pred_fake_x.detach(), torch.zeros_like(pred_fake_x.detach(), requires_grad=False).detach()
         )
-        enc_loss_reconstruction = self.loss_functions["Reconstruction"](
-            fake_images_x, X_batch
-        )
-        kl_loss = 0.5*(log_variance.exp() + mu**2 - log_variance - 1).sum()
 
-        enc_loss = 1/3*(enc_loss_fake_x + self.lambda_KL*kl_loss + self.lambda_x*enc_loss_reconstruction)
+        # get the features for the unmodified input
+        _ = self.adversary(X_batch)
+        real_x_features = self.adversary.network._get_feature_layer_activations()
+
+        # calculate reconstruction loss values
+        # calculate the reconstruction loss for the fake_x features
+        recon_loss_x = self.loss_functions["Reconstruction"](real_x_features, fake_x_features)
+
+        # accumulate gradient
+        # recon_loss_x.backward(retain_graph=True)
+
+        # Experimental!!!!
+        # calculate the pixel-level L1 Reconstruction loss
+        l1_loss = self.loss_functions["Reconstruction"](X_batch, recon_images)
+
+        # accumulate the gradient
+        # l1_loss.backward(retain_graph=True)
+
+        # total_recon_loss = recon_loss_x + recon_loss_z + l1_loss
+        total_recon_loss = (1 - self.recon_weight_gamma_enc)*(recon_loss_x) + self.recon_weight_gamma_enc*l1_loss
+        
+        # The authors do not apply the KL lambda weight to the encoder
+        enc_loss = (kl_loss + total_recon_loss)
+
+        enc_loss.backward(retain_graph=True)
+
+        # print("Encoder Loss")
+        # print(enc_loss)
+
+        # update the lambda kl value
+        self.lambda_KL = min(self.lambda_KL_max, self.lambda_KL + 1.0 / (self.warmup_steps * self.steps_per_epoch))
+
+        # print(self.lambda_KL)
+        # update the encoder recon lambda value value
+        if (self.epoch_ctr_+1) > self.recon_fixed_epochs:
+            # TODO: EWWWW Hardcoded badness!!!! Fix later...
+            self.recon_weight_gamma_enc = min(self.recon_max_weight, self.recon_weight_gamma_enc + self.recon_weight_diff / (self.recon_warmup_epochs * self.steps_per_epoch))
+            # print("Updating reconstruction weight!!!: %.6f" % self.recon_weight_gamma_enc)
+
         return {
             "Encoder": enc_loss,
             "Encoder_x": enc_loss_fake_x,
-            "Kullback-Leibler": self.lambda_KL*kl_loss,
-            "Reconstruction": self.lambda_x*enc_loss_reconstruction
+            "Kullback-Leibler": kl_loss,
+            "L1Loss-Enc" : l1_loss,
+            "Reconstruction_Enc": total_recon_loss
         }
+        
 
     def _calculate_adversary_loss(self, X_batch, Z_batch, fake_images_x=None, fake_images_z=None):
-        if fake_images_x is None:
-            encoded_output = self.encode(x=X_batch)
-            mu = self.mu(encoded_output)
-            log_variance = self.log_variance(encoded_output)
-            Z_batch_encoded = mu + torch.exp(log_variance)*Z_batch
-            fake_images_x = self.generate(z=Z_batch_encoded).detach()
-        if fake_images_z is None:
-            fake_images_z = self.generate(Z_batch).detach()
 
-        fake_predictions_x = self.predict(x=fake_images_x)
-        fake_predictions_z = self.predict(x=fake_images_z)
-        real_predictions = self.predict(x=X_batch)
+        # based on Pytorch - DCGAN example
+        self._zero_grad(who="Adversary")
+        
+        # calculate stats using real batch data
+        real_preds = self.adversary(X_batch)
+        
+        cleaned_labels = self.clean_discriminatoir_labels(torch.ones_like(real_preds, requires_grad=True))
 
+        # calculate the loss on the real data
+        adv_loss_real = self.loss_functions["Adversary"](real_preds, cleaned_labels)
+
+        # randomly print off the predictions
+        rand_val = random.uniform(0, 1)
+
+        if rand_val > 0.99:
+            print("Sum of Positive Adversary Real Predictions")
+            positive_sum = np.sum(real_preds.detach().cpu().reshape(-1, 1).numpy() > 0)
+            print(positive_sum)
+            sys.stdout.flush()
+
+        # step this loss backwards
+        adv_loss_real.backward(retain_graph=True)
+
+        # generate images based on input and z's
+        fake_z = self.generator(Z_batch.detach())
+        fake_x = self.generate_batch(X_batch=X_batch, requires_grad=True)
+
+        fake_z = fake_z.detach()
+        fake_x = fake_x.detach()
+
+        # now train with reconstructed-real data
+        fake_preds_x = self.adversary(fake_x)
+
+        # calculate the loss value
         adv_loss_fake_x = self.loss_functions["Adversary"](
-            fake_predictions_x, torch.zeros_like(fake_predictions_x, requires_grad=False)
-        )
-        adv_loss_fake_z = self.loss_functions["Adversary"](
-            fake_predictions_z, torch.zeros_like(fake_predictions_z, requires_grad=False)
-        )
-        adv_loss_real = self.loss_functions["Adversary"](
-            real_predictions, torch.ones_like(real_predictions, requires_grad=False)
+            fake_preds_x, torch.zeros_like(fake_preds_x, requires_grad=False)
         )
 
-        adv_loss = 1/3*(adv_loss_fake_z + adv_loss_fake_x + adv_loss_real)
+        # calculate gradients for this batch, accumulate with previous
+        adv_loss_fake_x.backward(retain_graph=True)
+        
+        # # now train with all-fake data
+        # #    detaching based on DCGAN example-code
+        # fake_preds_z = self.adversary(fake_z)
+
+        # # calculate the loss value
+        # adv_loss_fake_z = self.loss_functions["Adversary"](
+        #     fake_preds_z, torch.zeros_like(fake_preds_z, requires_grad=False)
+        # )
+        
+        # # update the loss value for this batch, accumulate gradient with previous
+        # adv_loss_fake_z.backward(retain_graph=True)
+
+        # adv_loss = (adv_loss_fake_z + adv_loss_fake_x + adv_loss_real)
+
+        adv_loss = (adv_loss_fake_x + adv_loss_real)
+
+
+        # print("Discriminator Loss:")
+        # print(adv_loss)
+        
+        # clean just to be safe
+        torch.cuda.empty_cache()
+
         return {
             "Adversary": adv_loss,
             "Adversary_fake_x": adv_loss_fake_x,
-            "Adversary_fake_z": adv_loss_fake_z,
+            # "Adversary_fake_z": adv_loss_fake_z,
             "Adversary_real": adv_loss_real,
             "RealFakeRatio": adv_loss_real / adv_loss_fake_x
         }
+
+    # Perform label-smoothing - suggested GAN hack - https://github.com/soumith/ganhacks (source for idea) https://arxiv.org/pdf/1701.00160.pdf (paper proposing idea)
+    def label_smoothing_(self, y):
+        rand_vec = torch.rand(y.size())
+        rand_vec = rand_vec.to(device=self.device)
+        temp_ = y - 0.2 + (rand_vec*0.5)              # labels between [0.7, 1.2]
+        temp_[temp_ < 0] = 0                          # can't have negative label values, unnecessary if doing one-sided label smoothing
+        return temp_
+
+
+    # randomly flip small protion of discriminator labels - suggested GAN hack - https://github.com/soumith/ganhacks, NIPS 2016 tutorial + Soumith
+    def nosiy_labels_(self, y, p_flip):
+        # determine the number of labels to flip
+        n_select = int(p_flip * y.size()[0])
+        # choose labels to flip
+        flip_ix = np.random.choice([i for i in range(y.shape[0])], size=n_select)
+        # invert the labels in place
+        y[flip_ix] = 1 - y[flip_ix]
+        return y
+
+
+    def clean_discriminatoir_labels(self, y):
+        y_ = self.label_smoothing_(y)
+        return self.nosiy_labels_(y_, p_flip=0.05)    # 5% chance of a flip
+
+
+    def _save_models(self, epoch, name=None):
+        """ Saves model in the model folder as torch / pickle object.
+
+        Parameters
+        ----------
+        name : str, optional
+            name of the saved file. folder specified in the constructor used
+            in absolute path.
+        """
+        if name is None:
+            name = "model.torch"
+        if self.folder is not None:
+            torch.save({'encoder' : self.neural_nets["Encoder"].network.state_dict(),
+                        'decoder' : self.neural_nets["Generator"].network.state_dict(),
+                        "discriminator" : self.neural_nets["Adversary"].network.state_dict(),
+                        "encoder_opt_state" : self.optimizers["Encoder"].state_dict(),
+                        "decoder_opt_state" : self.optimizers["Generator"].state_dict(),
+                        "discriminator_opt_state" : self.optimizers["Adversary"].state_dict(),
+                        "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
+                        "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
+                        "discriminator_lr_state" : self.lr_schedulers["Adversary"].state_dict(),
+                        "epoch" : epoch,
+                        # "losses" : self._losses
+                        },
+                        os.path.join(self.folder, name))
+
+        else:
+            torch.save({'encoder' : self.neural_nets["Encoder"].network.state_dict(),
+                        'decoder' : self.neural_nets["Generator"].network.state_dict(),
+                        "discriminator" : self.neural_nets["Adversary"].network.state_dict(),
+                        "encoder_opt_state" : self.optimizers["Encoder"].state_dict(),
+                        "decoder_opt_state" : self.optimizers["Generator"].state_dict(),
+                        "discriminator_opt_state" : self.optimizers["Adversary"].state_dict(),
+                        "encoder_lr_state" : self.lr_schedulers["Encoder"].state_dict(),
+                        "decoder_lr_state" : self.lr_schedulers["Generator"].state_dict(),
+                        "discriminator_lr_state" : self.lr_schedulers["Adversary"].state_dict(),
+                        "epoch" : epoch,
+                        # "losses" : self._losses
+                        },
+                        os.path.join("", name))
+
+   
+    def _load_models(self, path=None, who=None, training=False):
+        # construct the path to the saved model
+        if path is None:
+            if self.folder is not None:
+                path = os.path.join(self.folder, "model.torch")
+            else:
+                path = os.path.join(self.folder, "model.torch")
+
+        print(path)
+        
+        # load the saved checkpoint
+        check_point = torch.load(path)
+
+        # load the epoch we saved this model from
+        epoch_ = check_point["epoch"]
+
+        if who is not None:
+            self.neural_nets[who].network.load_state_dict(check_point[who.lower()])
+
+        else:
+            # load the actual models
+            self.neural_nets["Encoder"].network.load_state_dict(check_point["encoder"])
+            self.neural_nets["Generator"].network.load_state_dict(check_point["decoder"])
+            self.neural_nets["Adversary"].network.load_state_dict(check_point["discriminator"])
+            
+            # if we are loading the model to continue training
+            if training:
+                # load the optimizers
+                self.optimizers["Encoder"].load_state_dict(check_point["encoder_opt_state"])
+                self.optimizers["Generator"].load_state_dict(check_point["decoder_opt_state"])
+                self.optimizers["Adversary"].load_state_dict(check_point["discriminator_opt_state"])
+
+                # load the learning rate schedulers
+                self.lr_schedulers["Encoder"].load_state_dict(check_point["encoder_lr_state"])
+                self.lr_schedulers["Generator"].load_state_dict(check_point["decoder_lr_state"])
+                self.lr_schedulers["Adversary"].load_state_dict(check_point["discriminator_lr_state"])
+
+                # # load the loss dict
+                # self._losses = check_point["losses"]
+
+        # return the epoch this model was saved at
+        return epoch_

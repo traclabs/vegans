@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
+logger = logging.getLogger()
 
 from vegans.utils.processing import invert_channel_order
 
@@ -76,10 +78,12 @@ def plot_images(images, labels=None, show=True, n=None):
     plt.figure, plt.axis
         Created figure and axis objects.
     """
+    # re-order the images channels
     if len(images.shape)==4 and images.shape[1] == 3:
         images = invert_channel_order(images=images)
     elif len(images.shape)==4 and images.shape[1] == 1:
         images = images.reshape((-1, images.shape[2], images.shape[3]))
+
     if n is None:
         n = images.shape[0]
     if n > 36:
@@ -88,16 +92,22 @@ def plot_images(images, labels=None, show=True, n=None):
     ncols = n // nrows
     fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8, 8))
     axs = np.ravel(axs)
+    
+    old_level = logger.level
+    logger.setLevel(100)
 
     for i, ax in enumerate(axs):
         ax.imshow(images[i])
         ax.axis("off")
         if labels is not None:
-            ax.set_title("Label: {}".format(labels[i]))
+            ax.set_title("Label: {:.4f}".format(labels[i]))
 
     fig.tight_layout()
     if show:
         plt.show()
+    
+    logger.setLevel(old_level)
+
     return fig, axs
 
 def create_gif(source_path, target_path=None):

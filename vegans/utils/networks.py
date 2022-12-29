@@ -18,6 +18,9 @@ class NeuralNetwork(Module):
     def __init__(self, network, name, input_size, device, ngpu, secure):
         super(NeuralNetwork, self).__init__()
         self.name = name
+        
+        print("\t!!!!! Creating a %s model!!!" % self.name)
+        
         self.input_size = input_size
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -50,9 +53,12 @@ class NeuralNetwork(Module):
 
         self.output_size = self._get_output_shape()[1:]
 
+        print(self._get_output_shape())
+        print(self.output_size)
+        print("----------------------------------------")
+
     def forward(self, x):
-        output = self.network(x)
-        return output
+        return self.network(x)
 
     def _validate_input(self):
         iterative_layers = self._get_iterative_layers(self.network, self.input_type)
@@ -105,7 +111,15 @@ class NeuralNetwork(Module):
 
     def _get_output_shape(self):
         sample_input = torch.rand([2, *self.input_size]).to(self.device)
-        return tuple(self.network(sample_input).shape)
+        output = self.network(sample_input)
+
+        # really lame, can't think of anything better quickly rn
+        if type(output) is tuple:
+            output = output[0]
+
+        out_shape = tuple(output.shape)
+        # print(out_shape)
+        return out_shape
 
 
     #########################################################################
@@ -151,13 +165,13 @@ class Adversary(NeuralNetwork):
             else:
                 if adv_type not in valid_types:
                     raise TypeError("`adv_type` must be one of {}. Given: {}.".format(valid_types, adv_type))
-            self._type = adv_type
+            # self._type = adv_type
 
-            if valid_last_layer is not None:
-                assert last_layer_type in valid_last_layer, (
-                    "Last layer activation function of {} needs to be one of '{}'. Given: {}."
-                    .format(adv_type, valid_last_layer, last_layer_type)
-                )
+            # if valid_last_layer is not None:
+            #     assert last_layer_type in valid_last_layer, (
+            #         "Last layer activation function of {} needs to be one of '{}'. Given: {}."
+            #         .format(adv_type, valid_last_layer, last_layer_type)
+            #     )
 
         super().__init__(network, input_size=input_size, name="Adversary", device=device, ngpu=ngpu, secure=secure)
 
