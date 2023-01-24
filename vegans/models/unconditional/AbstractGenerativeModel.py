@@ -306,9 +306,9 @@ class AbstractGenerativeModel(ABC):
                 "return values for X and y when iterating."
             )
             try:
-                x_train_batch, y_train_batch = iter(X_train).next()
+                x_train_batch, y_train_batch = next(iter(X_train))
             except ValueError:
-                x_train_batch = iter(X_train).next()
+                x_train_batch = next(iter(X_train))
                 y_train_batch = None
         else:
             x_train_batch = X_train[:batch_size]
@@ -321,9 +321,9 @@ class AbstractGenerativeModel(ABC):
             )
             if X_test is not None:
                 try:
-                    x_test_batch, y_test_batch = iter(X_test).next()
+                    x_test_batch, y_test_batch = next(iter(X_test))
                 except ValueError:
-                    x_test_batch = iter(X_test).next()
+                    x_test_batch = next(iter(X_test))
                     y_test_batch = None
         else:
             x_test_batch = X_test[:batch_size] if X_test is not None else None
@@ -456,14 +456,14 @@ class AbstractGenerativeModel(ABC):
         max_batches = len(train_dataloader)
         
         # HACK
-        test_x_batch = iter(test_dataloader).next().to(self.device).float() if X_test is not None else iter(X_train).next().to(self.device).float()
+        test_x_batch = next(iter(test_dataloader)).to(self.device).float() if X_test is not None else next(iter(X_train)).to(self.device).float()
         # test_x_batch = iter(test_dataloader).next()[0].to(self.device).float() if X_test is not None else iter(X_train).next()[0].to(self.device).float()
         
         
         print_every, save_model_every, save_images_every, save_losses_every = save_periods
         
         # HACK -- get only the training data, ignore labels
-        train_x_batch = iter(train_dataloader).next() # [0]        
+        train_x_batch = next(iter(train_dataloader)) # [0]        
         # train_x_batch = iter(train_dataloader).next()[0] # [0]
         
 
