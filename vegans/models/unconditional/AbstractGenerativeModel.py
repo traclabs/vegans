@@ -1007,6 +1007,61 @@ class AbstractGenerativeModel(ABC):
 
         return losses_dict
 
+    
+    def eval_recons(self, test_dataloader, type):
+        pixel_errors = []
+
+        for batch, X in enumerate(test_dataloader):
+            X = X.to(self.device).float()
+
+            # just to be safe
+            torch.cuda.empty_cache()
+
+            # generate the actual images
+            recon_images = self.generate_batch(X_batch=X)
+            recon_images = recon_images.detach().cpu().numpy()
+            input_images = X.detach().cpu().numpy()
+            torch.cuda.empty_cache()
+
+            # save off the input, recons, and im-diffs
+            self.plot_batch_preds(input_images, recon_images, batch, type)
+
+            se_batch = np.square(recon_images - input_images)
+
+            pixel_errors.extend(se_batch)
+
+            # print(np.array(pixel_errors).shape)
+
+        mse_dataset = np.mean(pixel_errors)
+        std_dataset = np.std(pixel_errors)
+
+        return mse_dataset, std_dataset
+
+
+
+    def plot_batch_preds(self, images, recons, step_num, type):
+        traj_images_path = os.path.join(self.folder, "traj_images", type)
+
+        if not os.path.exists(traj_images_path):
+            os.makedirs(traj_images_path)
+
+        # save off the GT images
+        fig, axs = plot_images(images=images, labels=None, show=False)
+        fig.savefig(os.path.join(traj_images_path, ("gt_%s.png" % step_num)))
+        plt.close(fig)
+
+        # save off the actual reconstructions and predictions
+        fig2, axs = plot_images(images=recons, labels=None, show=False)
+        fig2.savefig(os.path.join(traj_images_path, ("preds_%s.png" % step_num)))
+        plt.close(fig2)
+
+        # save off the input - recon images
+        im_diffs = np.abs(images - recons)
+        fig3, axs = plot_images(images=im_diffs, labels=None, show=False)
+        fig3.savefig(os.path.join(traj_images_path, ("diffs_%s.png" % step_num)))
+        plt.close(fig3)
+
+
     def generate_dataset_images(self, X_data, folder_path):    
         
         for batch, X in enumerate(X_data):
